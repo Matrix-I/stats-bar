@@ -1,0 +1,5 @@
+BatteryBar.app/
+BatteryBar
+__pycache__/
+*.pyc
+.claude/

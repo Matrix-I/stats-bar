@@ -1,0 +1,674 @@
+// BatteryBar.swift — Menu bar battery health app, coconutBattery-style
+//
+// Requires : macOS 13 Ventura or later + Xcode Command Line Tools
+//            (xcode-select --install)
+//
+// Quick run     :  swiftc -O -parse-as-library BatteryBar.swift -o BatteryBar && ./BatteryBar
+// Package .app  :  ./build_app.sh
+//
+// Data is read directly from the IOKit registry "AppleSmartBattery" — the same
+// source coconutBattery uses. No root needed, no kernel extension.
+
+import SwiftUI
+import AppKit
+import IOKit
+import Foundation
+
+// MARK: - Model
+
+struct BatteryInfo {
+    var deviceName = "Battery"
+    var serial = ""
+    var currentCapacity = 0      // mAh
+    var maxCapacity = 0          // mAh — actual full charge capacity
+    var designCapacity = 0       // mAh — design capacity
+    var cycleCount = 0
+    var temperatureC = 0.0
+    var voltageV = 0.0
+    var amperageA = 0.0          // negative = discharging, positive = charging
+    var isCharging = false
+    var externalConnected = false
+    var fullyCharged = false
+    var timeToEmpty = 0          // minutes (65535 = still calculating)
+    var timeToFull = 0           // minutes
+    var adapterWatts = 0
+    var adapterName = ""
+    var adapterPower = 0.0        // W — actual DC in power drawn from the charger (BatteryData.AdapterPower)
+
+    var chargePercent: Double {
+        maxCapacity > 0 ? Double(currentCapacity) / Double(maxCapacity) * 100 : 0
+    }
+    var healthPercent: Double {
+        designCapacity > 0 ? Double(maxCapacity) / Double(designCapacity) * 100 : 0
+    }
+    var watts: Double { voltageV * amperageA }
+}
+
+// MARK: - IOKit reader
+
+final class BatteryReader: ObservableObject {
+    @Published var info = BatteryInfo()
+    private var timer: Timer?
+
+    init() {
+        refresh()
+        timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            self?.refresh()
+        }
+    }
+
+    func refresh() {
+        let service = IOServiceGetMatchingService(kIOMainPortDefault,
+                                                  IOServiceMatching("AppleSmartBattery"))
+        guard service != IO_OBJECT_NULL else { return }
+        defer { IOObjectRelease(service) }
+
+        var propsRef: Unmanaged<CFMutableDictionary>?
+        guard IORegistryEntryCreateCFProperties(service, &propsRef,
+                                                kCFAllocatorDefault, 0) == KERN_SUCCESS,
+              let props = propsRef?.takeRetainedValue() as? [String: Any] else { return }
+
+        var i = BatteryInfo()
+        i.deviceName = props["DeviceName"] as? String ?? "Battery"
+        i.serial = props["Serial"] as? String ?? ""
+        i.designCapacity = intOf(props["DesignCapacity"])
+
+        // Apple Silicon: AppleRaw* holds the real mAh values; older Intel: fall back to Max/CurrentCapacity
+        i.maxCapacity = intOf(props["AppleRawMaxCapacity"])
+        if i.maxCapacity == 0 { i.maxCapacity = intOf(props["MaxCapacity"]) }
+        i.currentCapacity = intOf(props["AppleRawCurrentCapacity"])
+        if i.currentCapacity == 0 { i.currentCapacity = intOf(props["CurrentCapacity"]) }
+
+        i.cycleCount = intOf(props["CycleCount"])
+        i.temperatureC = Double(intOf(props["Temperature"])) / 100.0
+        i.voltageV = Double(intOf(props["Voltage"])) / 1000.0
+        i.amperageA = Double(signedIntOf(props["Amperage"])) / 1000.0
+        i.isCharging = props["IsCharging"] as? Bool ?? false
+        i.externalConnected = props["ExternalConnected"] as? Bool ?? false
+        i.fullyCharged = props["FullyCharged"] as? Bool ?? false
+        i.timeToEmpty = intOf(props["AvgTimeToEmpty"])
+        i.timeToFull = intOf(props["AvgTimeToFull"])
+
+        if let ad = props["AdapterDetails"] as? [String: Any] {
+            i.adapterWatts = intOf(ad["Watts"])
+            i.adapterName = (ad["Name"] as? String)
+                ?? (ad["Description"] as? String) ?? ""
+        }
+
+        // DC in — total power the machine is drawing from the charger (Apple Silicon: BatteryData.AdapterPower)
+        if let bd = props["BatteryData"] as? [String: Any],
+           let p = bd["AdapterPower"] as? NSNumber {
+            i.adapterPower = p.doubleValue
+        }
+
+        let snapshot = i
+        DispatchQueue.main.async { self.info = snapshot }
+    }
+}
+
+// MARK: - IOKit value helpers (shared by the Mac + iOS readers)
+
+func intOrNil(_ any: Any?) -> Int? {
+    (any as? NSNumber)?.intValue
+}
+
+func intOf(_ any: Any?) -> Int {
+    intOrNil(any) ?? 0
+}
+
+/// IOKit sometimes returns negative numbers as unsigned 32-bit (e.g. Amperage while discharging)
+func signedIntOrNil(_ any: Any?) -> Int? {
+    guard let n = any as? NSNumber else { return nil }
+    var v = n.int64Value
+    if v > 0x7FFF_FFFF && v <= 0xFFFF_FFFF { v -= 0x1_0000_0000 }
+    return Int(v)
+}
+
+func signedIntOf(_ any: Any?) -> Int {
+    signedIntOrNil(any) ?? 0
+}
+
+// MARK: - iOS device model (iPhone/iPad over USB)
+
+struct IOSDeviceInfo: Identifiable {
+    let id: String               // UDID
+    var name = ""
+    var model = ""
+    var iosVersion = ""
+    var serial = ""
+    var currentCapacity: Int?     // mAh — nil if diagnostics doesn't return this key
+    var maxCapacity: Int?
+    var designCapacity: Int?
+    var cycleCount: Int?
+    var temperatureC: Double?
+    var voltageV: Double?
+    var isCharging = false
+    var externalConnected = false
+    var fullyCharged = false
+    var errorMessage: String?
+    var isStale = false           // true = currently showing the last known data because the connection briefly dropped
+    var capturedAt: Date?         // timestamp this data was captured
+
+    var chargePercent: Double? {
+        guard let cur = currentCapacity, let max = maxCapacity, max > 0 else { return nil }
+        return Double(cur) / Double(max) * 100
+    }
+    var healthPercent: Double? {
+        guard let max = maxCapacity, max > 0, let design = designCapacity, design > 0 else { return nil }
+        return Double(max) / Double(design) * 100
+    }
+}
+
+// MARK: - iOS device reader (shells out to libimobiledevice, same approach as cocobat.py --ios)
+
+final class IOSDeviceReader: ObservableObject {
+    @Published var devices: [IOSDeviceInfo] = []
+    @Published var toolsMissing = false
+    @Published var statusMessage: String?
+
+    /// Only accessed/mutated on the main thread — refresh() is always called from main (button, onAppear, timer).
+    private var isBusy = false
+    private var timer: Timer?
+
+    /// Cache of the most recently read devices (only touched on the main thread, inside publish) —
+    /// used to keep showing data when the USB connection drops briefly instead of the device "vanishing".
+    private var lastGood: [IOSDeviceInfo] = []
+    private var lastGoodAt: Date?
+    private static let staleGrace: TimeInterval = 90   // seconds
+
+    private static let searchDirs = ["/opt/homebrew/bin/", "/usr/local/bin/", "/usr/bin/"]
+
+    init() {
+        refresh()
+        // MenuBarExtra(.window) builds the view once and just shows/hides it afterward — .onAppear
+        // doesn't refire on every menu open, so a dedicated timer is needed to pick up plug/unplug events.
+        timer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            self?.refresh()
+        }
+    }
+
+    func refresh() {
+        guard !isBusy else { return }
+        isBusy = true
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            self?.doRefresh()
+        }
+    }
+
+    private func toolPath(_ name: String) -> String? {
+        for dir in Self.searchDirs {
+            let p = dir + name
+            if FileManager.default.isExecutableFile(atPath: p) { return p }
+        }
+        return nil
+    }
+
+    /// Runs a command, returns stdout if exit code is 0, nil otherwise. Reads both pipes concurrently —
+    /// reading them sequentially (stdout then stderr) can deadlock if the child process fills the
+    /// stderr buffer while we're still waiting for EOF on stdout.
+    private func run(_ path: String, _ args: [String]) -> Data? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = args
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        process.standardOutput = outPipe
+        process.standardError = errPipe
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+
+        let group = DispatchGroup()
+        var outData = Data()
+        group.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+            group.leave()
+        }
+        group.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = errPipe.fileHandleForReading.readDataToEndOfFile()
+            group.leave()
+        }
+        group.wait()
+        process.waitUntilExit()
+        return process.terminationStatus == 0 ? outData : nil
+    }
+
+    private func infoValue(_ path: String, udid: String, key: String) -> String? {
+        guard let data = run(path, ["-u", udid, "-k", key]),
+              let str = String(data: data, encoding: .utf8) else { return nil }
+        let trimmed = str.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// Lists UDIDs, retrying a few times since the USB connection (usbmux) can drop for a few
+    /// seconds, especially when the device is locked or another app is holding the lockdown session.
+    private func listUDIDs(_ path: String) -> [String] {
+        for attempt in 0..<5 {
+            if let data = run(path, ["-l"]),
+               let s = String(data: data, encoding: .utf8) {
+                let udids = s.split(whereSeparator: \.isNewline)
+                    .map(String.init).filter { !$0.isEmpty }
+                if !udids.isEmpty { return udids }
+            }
+            if attempt < 4 { Thread.sleep(forTimeInterval: 0.4) }
+        }
+        return []
+    }
+
+    /// Reads ioregentry AppleSmartBattery, retrying since diagnostics also drops out temporarily.
+    private func readBatteryRegistry(_ path: String, udid: String) -> [String: Any]? {
+        for attempt in 0..<3 {
+            if let raw = run(path, ["-u", udid, "ioregentry", "AppleSmartBattery"]),
+               let plist = try? PropertyListSerialization.propertyList(from: raw, options: [], format: nil) as? [String: Any],
+               let reg = plist["IORegistry"] as? [String: Any] {
+                return reg
+            }
+            if attempt < 2 { Thread.sleep(forTimeInterval: 0.3) }
+        }
+        return nil
+    }
+
+    private func doRefresh() {
+        guard let ideviceIdPath = toolPath("idevice_id"),
+              let ideviceInfoPath = toolPath("ideviceinfo"),
+              let diagnosticsPath = toolPath("idevicediagnostics") else {
+            publish(devices: [], toolsMissing: true, status: nil)
+            return
+        }
+
+        let udids = listUDIDs(ideviceIdPath)
+        guard !udids.isEmpty else {
+            publish(devices: [], toolsMissing: false,
+                    status: "No iPhone/iPad found over USB.\nPlug in the cable, unlock the device, tap Trust.")
+            return
+        }
+
+        var results: [IOSDeviceInfo] = []
+        for udid in udids {
+            var dev = IOSDeviceInfo(id: udid)
+            dev.name = infoValue(ideviceInfoPath, udid: udid, key: "DeviceName") ?? udid
+            dev.model = infoValue(ideviceInfoPath, udid: udid, key: "ProductType") ?? ""
+            dev.iosVersion = infoValue(ideviceInfoPath, udid: udid, key: "ProductVersion") ?? ""
+
+            guard let reg = readBatteryRegistry(diagnosticsPath, udid: udid) else {
+                dev.errorMessage = "Couldn't read diagnostics — unlock the device + tap Trust."
+                results.append(dev)
+                continue
+            }
+
+            dev.serial = reg["Serial"] as? String ?? ""
+            dev.designCapacity = intOrNil(reg["DesignCapacity"])
+            dev.maxCapacity = intOrNil(reg["AppleRawMaxCapacity"]) ?? intOrNil(reg["NominalChargeCapacity"])
+            dev.currentCapacity = intOrNil(reg["AppleRawCurrentCapacity"])
+            dev.cycleCount = intOrNil(reg["CycleCount"])
+            if let t = intOrNil(reg["Temperature"]) { dev.temperatureC = Double(t) / 100.0 }
+            if let v = intOrNil(reg["Voltage"]) { dev.voltageV = Double(v) / 1000.0 }
+            dev.isCharging = reg["IsCharging"] as? Bool ?? false
+            dev.externalConnected = reg["ExternalConnected"] as? Bool ?? false
+            dev.fullyCharged = reg["FullyCharged"] as? Bool ?? false
+            dev.capturedAt = Date()
+
+            results.append(dev)
+        }
+
+        publish(devices: results, toolsMissing: false, status: nil)
+    }
+
+    private func publish(devices fresh: [IOSDeviceInfo], toolsMissing: Bool, status: String?) {
+        DispatchQueue.main.async {
+            self.isBusy = false
+
+            if toolsMissing {
+                self.toolsMissing = true
+                self.devices = []
+                self.statusMessage = nil
+                return
+            }
+            self.toolsMissing = false
+
+            let now = Date()
+            let graceOK = self.lastGoodAt.map { now.timeIntervalSince($0) < Self.staleGrace } ?? false
+
+            // Empty enumeration (flaky connection) → keep the device we just saw if still within the grace period.
+            if fresh.isEmpty {
+                if graceOK, !self.lastGood.isEmpty {
+                    self.devices = self.lastGood.map { var d = $0; d.isStale = true; return d }
+                    self.statusMessage = nil
+                } else {
+                    self.devices = []
+                    self.statusMessage = status
+                        ?? "No iPhone/iPad found over USB.\nPlug in the cable, unlock the device, tap Trust."
+                }
+                return
+            }
+
+            // Enumeration succeeded: any device whose diagnostics read failed reuses the last good data.
+            var merged: [IOSDeviceInfo] = []
+            for dev in fresh {
+                if dev.errorMessage != nil, graceOK,
+                   let prev = self.lastGood.first(where: { $0.id == dev.id }) {
+                    var s = prev; s.isStale = true
+                    merged.append(s)
+                } else {
+                    merged.append(dev)
+                }
+            }
+            self.devices = merged
+            self.statusMessage = nil
+
+            // Update the cache with devices that currently have good data (including reused ones).
+            let good = merged.filter { $0.errorMessage == nil }
+                .map { var d = $0; d.isStale = false; return d }
+            if !good.isEmpty {
+                self.lastGood = good
+                self.lastGoodAt = now
+            }
+        }
+    }
+}
+
+// MARK: - Helpers
+
+func healthColor(_ p: Double) -> Color {
+    p >= 80 ? .green : (p >= 60 ? .orange : .red)
+}
+
+func batterySymbol(percent: Int, charging: Bool) -> String {
+    if charging { return "battery.100percent.bolt" }
+    switch percent {
+    case 88...: return "battery.100percent"
+    case 63...: return "battery.75percent"
+    case 38...: return "battery.50percent"
+    case 13...: return "battery.25percent"
+    default:    return "battery.0percent"
+    }
+}
+
+func fmtMinutes(_ m: Int) -> String { "\(m / 60)h \(String(format: "%02d", m % 60))m" }
+
+// MARK: - Views
+
+struct BarView: View {
+    let pct: Double
+    let color: Color
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.primary.opacity(0.12))
+                Capsule()
+                    .fill(color.gradient)
+                    .frame(width: max(4, geo.size.width * min(max(pct, 0), 100) / 100))
+            }
+        }
+        .frame(height: 8)
+    }
+}
+
+struct InfoRow: View {
+    let label: String
+    let value: String
+
+    var body: some View {
+        HStack {
+            Text(label).foregroundStyle(.secondary)
+            Spacer()
+            Text(value)
+                .fontWeight(.medium)
+                .monospacedDigit()
+                .lineLimit(1)
+        }
+        .font(.system(size: 12))
+    }
+}
+
+struct IOSDeviceRow: View {
+    let device: IOSDeviceInfo
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(device.name).font(.caption).fontWeight(.semibold).lineLimit(1)
+                Spacer()
+                let sub = [device.model.isEmpty ? nil : device.model,
+                           device.iosVersion.isEmpty ? nil : "iOS \(device.iosVersion)"]
+                    .compactMap { $0 }.joined(separator: " · ")
+                if !sub.isEmpty {
+                    Text(sub).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+
+            if device.isStale {
+                Text("⟳ last known data — USB connection reconnecting")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+
+            if let err = device.errorMessage {
+                Text(err).font(.caption2).foregroundStyle(.red)
+            } else if device.chargePercent == nil && device.healthPercent == nil {
+                Text("⚠ Couldn't read health data — unlock the device + Trust, then tap Refresh.")
+                    .font(.caption2).foregroundStyle(.orange)
+            } else {
+                if let cp = device.chargePercent {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("Charge").font(.caption2).foregroundStyle(.secondary)
+                        Spacer()
+                        Text(String(format: "%.1f%%", cp)).font(.caption).fontWeight(.medium).monospacedDigit()
+                    }
+                    BarView(pct: cp, color: .blue)
+                }
+                if let hp = device.healthPercent {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("Health").font(.caption2).foregroundStyle(.secondary)
+                        Spacer()
+                        Text(String(format: "%.1f%%", hp))
+                            .font(.caption).fontWeight(.medium).monospacedDigit()
+                            .foregroundStyle(healthColor(hp))
+                    }
+                    BarView(pct: hp, color: healthColor(hp))
+                }
+                if let cc = device.cycleCount {
+                    InfoRow(label: "Cycle count", value: "\(cc)")
+                }
+                if device.externalConnected {
+                    InfoRow(label: "Status",
+                            value: device.isCharging ? "Charging"
+                                : (device.fullyCharged ? "Fully charged" : "Plugged in, not charging"))
+                }
+            }
+        }
+    }
+}
+
+struct IOSDevicesSection: View {
+    @ObservedObject var reader: IOSDeviceReader
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("📱 iPhone / iPad (USB)").font(.caption).foregroundStyle(.secondary)
+
+            if reader.toolsMissing {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Missing libimobiledevice.").font(.caption2).foregroundStyle(.orange)
+                    Text("brew install libimobiledevice")
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            } else if let status = reader.statusMessage {
+                Text(status).font(.caption2).foregroundStyle(.secondary)
+            } else if reader.devices.isEmpty {
+                Text("No devices connected.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            } else {
+                // No ScrollView here: SwiftUI's ScrollView has no well-defined ideal height inside
+                // an auto-sizing MenuBarExtra(.window) popover, so it was rendering at ~0 height —
+                // the section looked empty even though `devices` held real data. A plain VStack
+                // always has a proper intrinsic size, so let the popover grow to fit instead.
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(reader.devices) { device in
+                        IOSDeviceRow(device: device)
+                        if device.id != reader.devices.last?.id { Divider() }
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct BatteryDetailView: View {
+    @ObservedObject var reader: BatteryReader
+    @ObservedObject var iosReader: IOSDeviceReader
+
+    var body: some View {
+        let i = reader.info
+        VStack(alignment: .leading, spacing: 12) {
+
+            // Header
+            HStack {
+                Text("🔋 Battery").font(.headline)
+                Spacer()
+                Text(i.deviceName)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            // Current charge
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Current charge")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Text(String(format: "%.1f%%", i.chargePercent))
+                        .font(.system(size: 16, weight: .semibold))
+                        .monospacedDigit()
+                }
+                BarView(pct: i.chargePercent, color: .blue)
+                Text("\(i.currentCapacity) / \(i.maxCapacity) mAh")
+                    .font(.caption2).foregroundStyle(.secondary).monospacedDigit()
+            }
+
+            // Health
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Health (vs design)")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Text(String(format: "%.1f%%", i.healthPercent))
+                        .font(.system(size: 16, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(healthColor(i.healthPercent))
+                }
+                BarView(pct: i.healthPercent, color: healthColor(i.healthPercent))
+                Text("\(i.maxCapacity) / \(i.designCapacity) mAh (design)")
+                    .font(.caption2).foregroundStyle(.secondary).monospacedDigit()
+            }
+
+            Divider()
+
+            VStack(spacing: 6) {
+                InfoRow(label: "Cycle count", value: "\(i.cycleCount)")
+                InfoRow(label: "Temperature",
+                        value: String(format: "%.1f °C", i.temperatureC))
+                InfoRow(label: "Voltage",
+                        value: String(format: "%.2f V", i.voltageV))
+                InfoRow(label: "Power", value: powerText(i))
+                if i.externalConnected && i.adapterWatts > 0 {
+                    InfoRow(label: "Adapter",
+                            value: "\(i.adapterWatts) W \(i.adapterName)")
+                }
+                InfoRow(label: "Status", value: statusText(i))
+                if !i.serial.isEmpty {
+                    InfoRow(label: "Serial", value: i.serial)
+                }
+            }
+
+            Divider()
+
+            IOSDevicesSection(reader: iosReader)
+                .onAppear { iosReader.refresh() }
+
+            Divider()
+
+            HStack {
+                Button("Refresh") {
+                    reader.refresh()
+                    iosReader.refresh()
+                }
+                Spacer()
+                Button("Quit") { NSApp.terminate(nil) }
+            }
+            .controlSize(.small)
+        }
+        .padding(14)
+        .frame(width: 300)
+    }
+
+    private func powerText(_ i: BatteryInfo) -> String {
+        // Plugged in: show DC in (power drawn from the charger). On battery: show discharge power.
+        if i.externalConnected {
+            if i.adapterPower > 0.05 {
+                return String(format: "%.1f W (DC in)", i.adapterPower)
+            }
+            // Fallback for machines that don't expose AdapterPower (e.g. Intel): power flowing into the battery
+            let charge = i.watts
+            return charge > 0.05 ? String(format: "%.1f W (charging battery)", charge) : "—"
+        }
+        let w = abs(i.watts)
+        return w < 0.05 ? "0 W" : String(format: "%.1f W (discharging)", w)
+    }
+
+    private func statusText(_ i: BatteryInfo) -> String {
+        if i.fullyCharged && i.externalConnected { return "Fully charged" }
+        if i.isCharging {
+            return (1..<65535).contains(i.timeToFull)
+                ? "Full in ~\(fmtMinutes(i.timeToFull))" : "Charging"
+        }
+        if i.externalConnected { return "Plugged in, not charging" }
+        return (1..<65535).contains(i.timeToEmpty)
+            ? "~\(fmtMinutes(i.timeToEmpty)) remaining" : "On battery"
+    }
+}
+
+struct MenuBarLabel: View {
+    @ObservedObject var reader: BatteryReader
+
+    var body: some View {
+        let pct = Int(reader.info.chargePercent.rounded())
+        HStack(spacing: 3) {
+            Image(systemName: batterySymbol(percent: pct,
+                                            charging: reader.info.isCharging))
+            Text("\(pct)%").monospacedDigit()
+        }
+    }
+}
+
+// MARK: - App
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Hide the Dock icon when running as a bare binary (the .app bundle uses LSUIElement)
+        NSApp.setActivationPolicy(.accessory)
+    }
+}
+
+@main
+struct BatteryBarApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @StateObject private var reader = BatteryReader()
+    @StateObject private var iosReader = IOSDeviceReader()
+
+    var body: some Scene {
+        MenuBarExtra {
+            BatteryDetailView(reader: reader, iosReader: iosReader)
+        } label: {
+            MenuBarLabel(reader: reader)
+        }
+        .menuBarExtraStyle(.window)
+    }
+}
