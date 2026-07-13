@@ -49,12 +49,29 @@ struct BatteryInfo {
 final class BatteryReader: ObservableObject {
     @Published var info = BatteryInfo()
     private var timer: Timer?
+    private var interval: TimeInterval = 0
+
+    private static let idleInterval: TimeInterval = 5    // menu-bar glyph only needs the occasional tick
+    private static let activeInterval: TimeInterval = 1  // live readout while the detail panel is open
 
     init() {
         refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+        schedule(Self.idleInterval)
+    }
+
+    private func schedule(_ seconds: TimeInterval) {
+        guard seconds != interval else { return }
+        interval = seconds
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: true) { [weak self] _ in
             self?.refresh()
         }
+    }
+
+    /// Poll once a second while the detail panel is visible; drop back to the lazy cadence when it closes.
+    func setPanelOpen(_ open: Bool) {
+        schedule(open ? Self.activeInterval : Self.idleInterval)
+        if open { refresh() }
     }
 
     func refresh() {
@@ -398,54 +415,134 @@ struct BarView: View {
     }
 }
 
-/// Menu-bar battery glyph drawn like the native macOS one: horizontal outline +
-/// terminal nub, an inner fill proportional to the actual charge level, and a bolt
-/// (with a contrast halo so it stays visible at any fill) when charging. SF Symbols
-/// only ship `.bolt` for the 100% variant, so drawing it ourselves is the only way
-/// to show a charging battery that isn't stuck looking full.
+/// Draws the menu-bar battery as a resolution-independent **template** NSImage:
+/// horizontal outline + terminal nub, an inner fill proportional to the real charge
+/// level, and (when charging) a bolt punched out via `.destinationOut`. A template
+/// image is the reliable way to render a custom menu-bar glyph — the system tints it
+/// to match the menu bar (white on dark, black on light). A SwiftUI shape view with
+/// blend modes instead rendered as a solid dark blob, because `.primary` didn't adapt
+/// and the compositing flattened wrong. SF Symbols only ship `.bolt` for the 100%
+/// variant, so drawing it ourselves is the only way to show a partial charging battery.
+func batteryMenuBarImage(level: Double, charging: Bool, percent: Int? = nil) -> NSImage {
+    let h: CGFloat = 13
+    let lw: CGFloat = 1.2
+
+    // --- Number-inside style: the % sits inside the battery body, so there's no
+    // separate label and therefore no left/right ordering to get wrong. Width grows
+    // to fit 1–3 digits (plus a bolt when charging). ---
+    if let percent {
+        let text = "\(percent)" as NSString
+        let font = NSFont.monospacedDigitSystemFont(ofSize: 8.5, weight: .semibold)
+        let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.black]
+        let textSize = text.size(withAttributes: attrs)
+        let boltW: CGFloat = charging ? 5 : 0
+        let padX: CGFloat = 2.8
+        let bodyW = padX + boltW + ceil(textSize.width) + padX
+        let w = bodyW + 3.6
+
+        let img = NSImage(size: NSSize(width: w, height: h), flipped: false) { _ in
+            let bodyRect = NSRect(x: lw / 2, y: lw / 2, width: bodyW, height: h - lw)
+            NSColor.black.setStroke()
+            let outline = NSBezierPath(roundedRect: bodyRect, xRadius: 3.4, yRadius: 3.4)
+            outline.lineWidth = lw
+            outline.stroke()
+            NSColor.black.setFill()
+            NSBezierPath(roundedRect: NSRect(x: bodyW + 0.6, y: h / 2 - 2.4, width: 1.7, height: 4.8),
+                         xRadius: 0.8, yRadius: 0.8).fill()
+
+            var textX = bodyRect.minX + padX
+            if charging, let bolt = NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: nil) {
+                let bh = h - 4.5, bw = bh * (bolt.size.width / max(bolt.size.height, 1))
+                bolt.draw(in: NSRect(x: bodyRect.minX + 1.6, y: h / 2 - bh / 2, width: bw, height: bh),
+                          from: .zero, operation: .sourceOver, fraction: 1)
+                textX = bodyRect.minX + 1.6 + bw + 0.8
+            }
+            // Vertically centre the digits (nudge for the font's internal leading).
+            text.draw(at: NSPoint(x: textX, y: (h - textSize.height) / 2 + 0.3), withAttributes: attrs)
+            return true
+        }
+        img.isTemplate = true
+        return img
+    }
+
+    // --- Fill style: used when the % is hidden — a plain glyph with a proportional fill. ---
+    let w: CGFloat = 25
+    let img = NSImage(size: NSSize(width: w, height: h), flipped: false) { _ in
+        let bodyW = w - 3.6                       // leave room for the terminal nub
+        let bodyRect = NSRect(x: lw / 2, y: lw / 2, width: bodyW, height: h - lw)
+        NSColor.black.setStroke()                 // color ignored for templates; only alpha matters
+        let outline = NSBezierPath(roundedRect: bodyRect, xRadius: 3.4, yRadius: 3.4)
+        outline.lineWidth = lw
+        outline.stroke()
+
+        let inner = bodyRect.insetBy(dx: lw + 0.7, dy: lw + 0.7)
+        let fillW = max(1.5, inner.width * min(max(level, 0), 1))
+        NSColor.black.setFill()
+        NSBezierPath(roundedRect: NSRect(x: inner.minX, y: inner.minY, width: fillW, height: inner.height),
+                     xRadius: 1.6, yRadius: 1.6).fill()
+
+        NSBezierPath(roundedRect: NSRect(x: bodyW + 0.6, y: h / 2 - 2.4, width: 1.7, height: 4.8),
+                     xRadius: 0.8, yRadius: 0.8).fill()
+
+        if charging, let bolt = NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: nil) {
+            let bh = h * 0.92, bw = bh * (bolt.size.width / max(bolt.size.height, 1))
+            let br = NSRect(x: bodyRect.midX - bw / 2, y: h / 2 - bh / 2, width: bw, height: bh)
+            bolt.draw(in: br, from: .zero, operation: .destinationOut, fraction: 1)
+        }
+        return true
+    }
+    img.isTemplate = true
+    return img
+}
+
+/// Thin SwiftUI wrapper around the template battery image.
 struct BatteryGlyph: View {
     let level: Double        // 0…1
     let charging: Bool
-
+    var percent: Int? = nil  // when set, the number is drawn inside the battery
     var body: some View {
-        GeometryReader { geo in
-            let w = geo.size.width, h = geo.size.height
-            let lw = h * 0.10
-            let bodyW = w - h * 0.34            // room for the terminal nub
-            let inset = lw + h * 0.06
-            let innerMaxW = bodyW - inset * 2
-            ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: h * 0.30)
-                    .stroke(.primary, lineWidth: lw)
-                    .frame(width: bodyW, height: h)
-                RoundedRectangle(cornerRadius: h * 0.16)
-                    .fill(.primary)
-                    .frame(width: max(1.5, innerMaxW * min(max(level, 0), 1)),
-                           height: h - inset * 2)
-                    .padding(.leading, inset)
-                RoundedRectangle(cornerRadius: h * 0.12)
-                    .fill(.primary)
-                    .frame(width: h * 0.12, height: h * 0.38)
-                    .offset(x: bodyW + h * 0.02, y: h * 0.31)
-                if charging {
-                    // Punch a bolt-shaped transparent gap through the outline+fill, then draw
-                    // the bolt back in the center. Uses only .primary + alpha, so it stays
-                    // visible on both filled and empty areas and adapts to light/dark menu bars.
-                    Image(systemName: "bolt.fill")
-                        .font(.system(size: h * 0.74, weight: .black))
-                        .foregroundStyle(.primary)
-                        .blendMode(.destinationOut)
-                        .frame(width: bodyW, height: h)
-                    Image(systemName: "bolt.fill")
-                        .font(.system(size: h * 0.50, weight: .bold))
-                        .foregroundStyle(.primary)
-                        .frame(width: bodyW, height: h)
-                }
-            }
-            .compositingGroup()
-        }
-        .frame(width: 24, height: 12)
+        Image(nsImage: batteryMenuBarImage(level: level, charging: charging, percent: percent))
     }
+}
+
+/// Mac + iPhone in one menu-bar item: laptop glyph + Mac battery, then iPhone glyph +
+/// iPhone battery, all composited into a SINGLE template image. Baking it avoids the
+/// HStack reordering the real MenuBarExtra applies to multi-view labels.
+func dualMenuBarImage(macPct: Int, macCharging: Bool, iosPct: Int, iosCharging: Bool) -> NSImage {
+    let h: CGFloat = 13, symH: CGFloat = 10
+    let macBat = batteryMenuBarImage(level: Double(macPct) / 100, charging: macCharging, percent: macPct)
+    let iosBat = batteryMenuBarImage(level: Double(iosPct) / 100, charging: iosCharging, percent: iosPct)
+    func symbol(_ name: String) -> NSImage? {
+        guard let s = NSImage(systemSymbolName: name, accessibilityDescription: nil) else { return nil }
+        s.isTemplate = true
+        return s
+    }
+    let laptop = symbol("laptopcomputer"), phone = symbol("iphone")
+    func widthOf(_ img: NSImage?) -> CGFloat {
+        guard let img else { return 0 }
+        return symH * (img.size.width / max(img.size.height, 1))
+    }
+    let laptopW = widthOf(laptop), phoneW = widthOf(phone)
+    let gap: CGFloat = 2.5, bigGap: CGFloat = 6
+    let total = laptopW + gap + macBat.size.width + bigGap + phoneW + gap + iosBat.size.width
+
+    let img = NSImage(size: NSSize(width: total, height: h), flipped: false) { _ in
+        var x: CGFloat = 0
+        laptop?.draw(in: NSRect(x: x, y: (h - symH) / 2, width: laptopW, height: symH),
+                     from: .zero, operation: .sourceOver, fraction: 1)
+        x += laptopW + gap
+        macBat.draw(in: NSRect(x: x, y: 0, width: macBat.size.width, height: h),
+                    from: .zero, operation: .sourceOver, fraction: 1)
+        x += macBat.size.width + bigGap
+        phone?.draw(in: NSRect(x: x, y: (h - symH) / 2, width: phoneW, height: symH),
+                    from: .zero, operation: .sourceOver, fraction: 1)
+        x += phoneW + gap
+        iosBat.draw(in: NSRect(x: x, y: 0, width: iosBat.size.width, height: h),
+                    from: .zero, operation: .sourceOver, fraction: 1)
+        return true
+    }
+    img.isTemplate = true
+    return img
 }
 
 struct InfoRow: View {
@@ -568,10 +665,59 @@ struct IOSDevicesSection: View {
     }
 }
 
+/// Reports when the hosting window becomes visible / hidden. MenuBarExtra(.window) builds its
+/// content once and just orders the popover window in and out, so SwiftUI's `.onAppear` doesn't
+/// refire per open — observing the NSWindow directly is the reliable signal. `isVisible` tracks
+/// ordered-in state (not mere occlusion), so covering the popover doesn't count as "closed".
+final class WindowVisibilityView: NSView {
+    var onChange: ((Bool) -> Void)?
+    private weak var observed: NSWindow?
+    private var lastReported: Bool?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window !== observed else { evaluate(); return }
+        let nc = NotificationCenter.default
+        if let old = observed { nc.removeObserver(self, name: nil, object: old) }
+        observed = window
+        if let window {
+            for name: NSNotification.Name in [NSWindow.didBecomeKeyNotification,
+                                              NSWindow.didResignKeyNotification,
+                                              NSWindow.didChangeOcclusionStateNotification,
+                                              NSWindow.willCloseNotification] {
+                nc.addObserver(self, selector: #selector(windowChanged), name: name, object: window)
+            }
+        }
+        evaluate()
+    }
+
+    @objc private func windowChanged() {
+        // Defer so order-out has settled before we read isVisible.
+        DispatchQueue.main.async { [weak self] in self?.evaluate() }
+    }
+
+    private func evaluate() {
+        let visible = observed?.isVisible ?? false
+        guard visible != lastReported else { return }
+        lastReported = visible
+        onChange?(visible)
+    }
+
+    deinit { NotificationCenter.default.removeObserver(self) }
+}
+
+struct WindowVisibilityReporter: NSViewRepresentable {
+    let onChange: (Bool) -> Void
+    func makeNSView(context: Context) -> WindowVisibilityView {
+        let v = WindowVisibilityView(); v.onChange = onChange; return v
+    }
+    func updateNSView(_ nsView: WindowVisibilityView, context: Context) { nsView.onChange = onChange }
+}
+
 struct BatteryDetailView: View {
     @ObservedObject var reader: BatteryReader
     @ObservedObject var iosReader: IOSDeviceReader
-    @AppStorage("showMenuBarPercent") private var showMenuBarPercent = false
+    @AppStorage("showMenuBarPercent") private var showMenuBarPercent = true
     @AppStorage("showIPhoneMenuBar") private var showIPhoneMenuBar = false
 
     var body: some View {
@@ -667,6 +813,10 @@ struct BatteryDetailView: View {
         }
         .padding(14)
         .frame(width: 300)
+        .background(WindowVisibilityReporter { open in
+            reader.setPanelOpen(open)
+            if open { iosReader.refresh() }   // one immediate iOS read on open; it stays on its slow cadence
+        })
     }
 
     private func powerText(_ i: BatteryInfo) -> String {
@@ -701,7 +851,7 @@ struct BatteryDetailView: View {
 struct MenuBarLabel: View {
     @ObservedObject var reader: BatteryReader
     @ObservedObject var iosReader: IOSDeviceReader
-    @AppStorage("showMenuBarPercent") private var showMacPercent = false
+    @AppStorage("showMenuBarPercent") private var showMacPercent = true
     @AppStorage("showIPhoneMenuBar") private var showIPhoneMenuBar = false
 
     private var iosDevice: IOSDeviceInfo? {
@@ -715,28 +865,17 @@ struct MenuBarLabel: View {
         let macPct = Int(reader.info.chargePercent.rounded())
 
         if let ios = iosDevice, let iosCp = ios.chargePercent {
-            let iosPct = Int(iosCp.rounded())
-            VStack(alignment: .trailing, spacing: 1) {
-                HStack(spacing: 2) {
-                    Text("\(macPct)%").monospacedDigit()
-                    Image(systemName: "laptopcomputer")
-                    if reader.info.isCharging { Image(systemName: "bolt.fill") }
-                }
-                HStack(spacing: 2) {
-                    Text("\(iosPct)%").monospacedDigit()
-                    Image(systemName: "iphone")
-                    if ios.isCharging { Image(systemName: "bolt.fill") }
-                }
-            }
-            .font(.system(size: 9, weight: .medium))
+            // Both devices, baked into one image — no HStack for the menu bar to reverse.
+            Image(nsImage: dualMenuBarImage(macPct: macPct,
+                                            macCharging: reader.info.isCharging,
+                                            iosPct: Int(iosCp.rounded()),
+                                            iosCharging: ios.isCharging))
         } else {
-            HStack(spacing: 4) {
-                if showMacPercent {
-                    Text("\(macPct)%").monospacedDigit()
-                }
-                BatteryGlyph(level: reader.info.chargePercent / 100,
-                             charging: reader.info.isCharging)
-            }
+            // Number lives inside the battery, so there's just one element — no HStack
+            // ordering for the menu bar to reverse.
+            BatteryGlyph(level: reader.info.chargePercent / 100,
+                         charging: reader.info.isCharging,
+                         percent: showMacPercent ? macPct : nil)
         }
     }
 }
