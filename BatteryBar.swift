@@ -474,10 +474,19 @@ struct IOSDeviceRow: View {
                 if let cc = device.cycleCount {
                     InfoRow(label: "Cycle count", value: "\(cc)")
                 }
+                if let t = device.temperatureC {
+                    InfoRow(label: "Temperature", value: String(format: "%.1f °C", t))
+                }
+                if let v = device.voltageV {
+                    InfoRow(label: "Voltage", value: String(format: "%.2f V", v))
+                }
                 if device.externalConnected {
                     InfoRow(label: "Status",
                             value: device.isCharging ? "Charging"
                                 : (device.fullyCharged ? "Fully charged" : "Plugged in, not charging"))
+                }
+                if !device.serial.isEmpty {
+                    InfoRow(label: "Serial", value: device.serial)
                 }
             }
         }
