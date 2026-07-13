@@ -35,6 +35,15 @@ struct BatteryInfo {
     var adapterName = ""
     var adapterPower = 0.0        // W — actual DC in power drawn from the charger (BatteryData.AdapterPower)
 
+    // Live SMC power rails (~1 Hz — unlike the AppleSmartBattery gauge above, which only
+    // refreshes every ~30–60 s). nil when the machine doesn't expose that key / SMC is unavailable.
+    var smcSystemTotalW: Double? = nil   // PSTR — whole-system power
+    var smcDCInW: Double? = nil          // PDTR — power drawn from the charger
+    var smcBrightnessW: Double? = nil    // PDBR — display backlight
+    var smcThunderboltLW: Double? = nil  // PU1R
+    var smcThunderboltRW: Double? = nil  // PU2R
+    var smcPPBRW: Double? = nil          // PPBR
+
     var chargePercent: Double {
         maxCapacity > 0 ? Double(currentCapacity) / Double(maxCapacity) * 100 : 0
     }
@@ -50,8 +59,9 @@ final class BatteryReader: ObservableObject {
     @Published var info = BatteryInfo()
     private var timer: Timer?
     private var interval: TimeInterval = 0
+    private let smc = SMC()
 
-    private static let idleInterval: TimeInterval = 5    // menu-bar glyph only needs the occasional tick
+    private static let idleInterval: TimeInterval = 1    // refresh every second, even for the menu-bar glyph alone
     private static let activeInterval: TimeInterval = 1  // live readout while the detail panel is open
 
     init() {
@@ -63,9 +73,14 @@ final class BatteryReader: ObservableObject {
         guard seconds != interval else { return }
         interval = seconds
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: true) { [weak self] _ in
+        // Register in .common modes, not the implicit .default of scheduledTimer: while the
+        // menu-bar popover is up the run loop can sit in event-tracking mode, where a
+        // .default-only timer never fires — that's what makes the "live" readout freeze.
+        let t = Timer(timeInterval: seconds, repeats: true) { [weak self] _ in
             self?.refresh()
         }
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
     }
 
     /// Poll once a second while the detail panel is visible; drop back to the lazy cadence when it closes.
@@ -118,6 +133,14 @@ final class BatteryReader: ObservableObject {
             i.adapterPower = p.doubleValue
         }
 
+        // Live SMC power rails (these actually move every second — see the header note on BatteryInfo).
+        i.smcSystemTotalW  = smc.readFloat("PSTR")
+        i.smcDCInW         = smc.readFloat("PDTR")
+        i.smcBrightnessW   = smc.readFloat("PDBR")
+        i.smcThunderboltLW = smc.readFloat("PU1R")
+        i.smcThunderboltRW = smc.readFloat("PU2R")
+        i.smcPPBRW         = smc.readFloat("PPBR")
+
         let snapshot = i
         DispatchQueue.main.async { self.info = snapshot }
     }
@@ -143,6 +166,86 @@ func signedIntOrNil(_ any: Any?) -> Int? {
 
 func signedIntOf(_ any: Any?) -> Int {
     signedIntOrNil(any) ?? 0
+}
+
+// MARK: - SMC reader (live power-rail sensors)
+
+/// Reads power-rail sensors straight from the AppleSMC user client — the same source iStat Menus'
+/// POWER section uses, and (unlike the AppleSmartBattery gauge) it refreshes at roughly 1 Hz.
+/// No root or entitlement needed. Every rail is a `flt ` (little-endian Float32) key in Watts.
+/// SMC key names are chip-specific, so `readFloat` returns nil for any key this Mac doesn't expose.
+final class SMC {
+    private var conn: io_connect_t = 0
+    private(set) var isAvailable = false
+
+    // The kernel expects an 80-byte SMCParamStruct. Swift lays the nested structs out to match ONLY
+    // if `KeyInfo` is padded to its full 12-byte stride — without pad0…2, Swift packs `result`
+    // right after the 9 used bytes and the whole tail shifts, giving a 76-byte struct the SMC rejects.
+    private struct Version { var major: UInt8=0; var minor: UInt8=0; var build: UInt8=0; var reserved: UInt8=0; var release: UInt16=0 }
+    private struct PLimit  { var version: UInt16=0; var length: UInt16=0; var cpuPLimit: UInt32=0; var gpuPLimit: UInt32=0; var memPLimit: UInt32=0 }
+    private struct KeyInfo { var dataSize: UInt32=0; var dataType: UInt32=0; var dataAttributes: UInt8=0; var pad0: UInt8=0; var pad1: UInt8=0; var pad2: UInt8=0 }
+    private struct Param {
+        var key: UInt32 = 0
+        var vers = Version()
+        var pLimit = PLimit()
+        var keyInfo = KeyInfo()
+        var result: UInt8 = 0
+        var status: UInt8 = 0
+        var data8: UInt8 = 0
+        var data32: UInt32 = 0
+        var bytes: (UInt8,UInt8,UInt8,UInt8,UInt8,UInt8,UInt8,UInt8,
+                    UInt8,UInt8,UInt8,UInt8,UInt8,UInt8,UInt8,UInt8,
+                    UInt8,UInt8,UInt8,UInt8,UInt8,UInt8,UInt8,UInt8,
+                    UInt8,UInt8,UInt8,UInt8,UInt8,UInt8,UInt8,UInt8) =
+                   (0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)
+    }
+
+    private static let readBytes: UInt8 = 5     // SMC_CMD_READ_BYTES
+    private static let readKeyInfo: UInt8 = 9   // SMC_CMD_READ_KEYINFO
+    private static let kSMCHandleYPCEvent: UInt32 = 2
+
+    init() {
+        let svc = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSMC"))
+        guard svc != IO_OBJECT_NULL else { return }
+        defer { IOObjectRelease(svc) }
+        isAvailable = IOServiceOpen(svc, mach_task_self_, 0, &conn) == KERN_SUCCESS
+    }
+
+    deinit { if isAvailable { IOServiceClose(conn) } }
+
+    private func fourCC(_ s: String) -> UInt32 {
+        var r: UInt32 = 0
+        for c in s.utf8 { r = (r << 8) | UInt32(c) }
+        return r
+    }
+
+    private func call(_ input: inout Param, _ output: inout Param) -> Bool {
+        let inSize = MemoryLayout<Param>.stride
+        var outSize = MemoryLayout<Param>.stride
+        return IOConnectCallStructMethod(conn, Self.kSMCHandleYPCEvent, &input, inSize, &output, &outSize) == KERN_SUCCESS
+    }
+
+    /// Returns the value of a 32-bit-float SMC key in its native unit (Watts for the P* rails),
+    /// or nil if SMC is unavailable, the key is missing, or it isn't a `flt ` key.
+    func readFloat(_ key: String) -> Double? {
+        guard isAvailable else { return nil }
+        let k = fourCC(key)
+
+        var infoIn = Param(); infoIn.key = k; infoIn.data8 = Self.readKeyInfo
+        var infoOut = Param()
+        guard call(&infoIn, &infoOut), infoOut.result == 0,
+              infoOut.keyInfo.dataType == fourCC("flt "), infoOut.keyInfo.dataSize == 4 else { return nil }
+
+        var readIn = Param(); readIn.key = k; readIn.keyInfo = infoOut.keyInfo; readIn.data8 = Self.readBytes
+        var readOut = Param()
+        guard call(&readIn, &readOut), readOut.result == 0 else { return nil }
+
+        let raw = UInt32(readOut.bytes.0)
+                | (UInt32(readOut.bytes.1) << 8)
+                | (UInt32(readOut.bytes.2) << 16)
+                | (UInt32(readOut.bytes.3) << 24)
+        return Double(Float(bitPattern: raw))
+    }
 }
 
 // MARK: - iOS device model (iPhone/iPad over USB)
@@ -199,9 +302,15 @@ final class IOSDeviceReader: ObservableObject {
         refresh()
         // MenuBarExtra(.window) builds the view once and just shows/hides it afterward — .onAppear
         // doesn't refire on every menu open, so a dedicated timer is needed to pick up plug/unplug events.
-        timer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+        // Poll every second like the Mac reader. Each tick shells out to libimobiledevice (a few
+        // subprocesses + USB round-trips), but refresh()'s isBusy guard drops any tick that lands
+        // while the previous read is still running, so a slow cycle just lowers the effective rate.
+        // .common mode keeps it firing while the menu-bar popover is up (event-tracking run-loop mode).
+        let t = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             self?.refresh()
         }
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
     }
 
     func refresh() {
@@ -784,6 +893,21 @@ struct BatteryDetailView: View {
                 }
             }
 
+            // ⚡ Live power rails from the SMC — these tick every second, unlike the
+            // battery-gauge values above (which the OS only refreshes every ~30–60 s).
+            if i.smcSystemTotalW != nil || i.smcDCInW != nil {
+                Divider()
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("⚡ Power (live)").font(.caption).foregroundStyle(.secondary)
+                    if let v = i.smcSystemTotalW { InfoRow(label: "System Total", value: String(format: "%.2f W", v)) }
+                    if let v = i.smcDCInW, v > 0.05 { InfoRow(label: "DC In", value: String(format: "%.2f W", v)) }
+                    if let v = i.smcBrightnessW, v > 0.05 { InfoRow(label: "Display", value: String(format: "%.2f W", v)) }
+                    if let v = i.smcThunderboltLW { InfoRow(label: "Thunderbolt L", value: String(format: "%.2f W", v)) }
+                    if let v = i.smcThunderboltRW { InfoRow(label: "Thunderbolt R", value: String(format: "%.2f W", v)) }
+                    if let v = i.smcPPBRW { InfoRow(label: "PPBR", value: String(format: "%.2f W", v)) }
+                }
+            }
+
             Divider()
 
             IOSDevicesSection(reader: iosReader)
@@ -821,13 +945,21 @@ struct BatteryDetailView: View {
 
     private func powerText(_ i: BatteryInfo) -> String {
         // Plugged in: show DC in (power drawn from the charger). On battery: show discharge power.
+        // Prefer the SMC rails — they refresh ~1 Hz, so this row actually moves; the AdapterPower /
+        // voltage×amperage fallbacks come from the battery gauge and only update every ~30–60 s.
         if i.externalConnected {
+            if let dc = i.smcDCInW, dc > 0.05 {
+                return String(format: "%.2f W (DC in)", dc)
+            }
             if i.adapterPower > 0.05 {
                 return String(format: "%.1f W (DC in)", i.adapterPower)
             }
             // Fallback for machines that don't expose AdapterPower (e.g. Intel): power flowing into the battery
             let charge = i.watts
             return charge > 0.05 ? String(format: "%.1f W (charging battery)", charge) : "—"
+        }
+        if let sys = i.smcSystemTotalW, sys > 0.05 {
+            return String(format: "%.2f W (system)", sys)
         }
         let w = abs(i.watts)
         return w < 0.05 ? "0 W" : String(format: "%.1f W (discharging)", w)
