@@ -262,6 +262,7 @@ struct IOSDeviceInfo: Identifiable {
     var cycleCount: Int?
     var temperatureC: Double?
     var voltageV: Double?
+    var amperageA: Double?         // negative = discharging, positive = charging
     var isCharging = false
     var externalConnected = false
     var fullyCharged = false
@@ -276,6 +277,10 @@ struct IOSDeviceInfo: Identifiable {
     var healthPercent: Double? {
         guard let max = maxCapacity, max > 0, let design = designCapacity, design > 0 else { return nil }
         return Double(max) / Double(design) * 100
+    }
+    var watts: Double? {
+        guard let v = voltageV, let a = amperageA else { return nil }
+        return v * a
     }
 }
 
@@ -448,6 +453,7 @@ final class IOSDeviceReader: ObservableObject {
             dev.cycleCount = intOrNil(reg["CycleCount"])
             if let t = intOrNil(reg["Temperature"]) { dev.temperatureC = Double(t) / 100.0 }
             if let v = intOrNil(reg["Voltage"]) { dev.voltageV = Double(v) / 1000.0 }
+            if let a = signedIntOrNil(reg["Amperage"]) { dev.amperageA = Double(a) / 1000.0 }
             dev.isCharging = reg["IsCharging"] as? Bool ?? false
             dev.externalConnected = reg["ExternalConnected"] as? Bool ?? false
             dev.fullyCharged = reg["FullyCharged"] as? Bool ?? false
@@ -742,6 +748,12 @@ struct IOSDeviceRow: View {
                     }
                     BarView(pct: hp, color: healthColor(hp))
                 }
+                if let max = device.maxCapacity {
+                    InfoRow(label: "Full charge capacity", value: "\(max) mAh")
+                }
+                if let design = device.designCapacity {
+                    InfoRow(label: "Design capacity", value: "\(design) mAh")
+                }
                 if let cc = device.cycleCount {
                     InfoRow(label: "Cycle count", value: "\(cc)")
                 }
@@ -750,6 +762,9 @@ struct IOSDeviceRow: View {
                 }
                 if let v = device.voltageV {
                     InfoRow(label: "Voltage", value: String(format: "%.2f V", v))
+                }
+                if device.isCharging, let w = device.watts, w > 0.05 {
+                    InfoRow(label: "Charging with", value: String(format: "%.1f W", w))
                 }
                 if device.externalConnected {
                     InfoRow(label: "Status",
@@ -903,6 +918,8 @@ struct BatteryDetailView: View {
             Divider()
 
             VStack(spacing: 6) {
+                InfoRow(label: "Full charge capacity", value: "\(i.maxCapacity) mAh")
+                InfoRow(label: "Design capacity", value: "\(i.designCapacity) mAh")
                 InfoRow(label: "Cycle count", value: "\(i.cycleCount)")
                 InfoRow(label: "Temperature",
                         value: String(format: "%.1f °C", i.temperatureC))
