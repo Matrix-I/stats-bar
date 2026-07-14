@@ -35,6 +35,10 @@ struct BatteryInfo {
     // when SMC is unavailable.
     var fans: [Double] = []
 
+    // Live physical-RAM + swap usage (~1 Hz, from the Mach VM statistics — see MemoryStats).
+    // nil only if the VM stats read fails, which is effectively never on a real Mac.
+    var memory: MemoryInfo? = nil
+
     var chargePercent: Double {
         maxCapacity > 0 ? Double(currentCapacity) / Double(maxCapacity) * 100 : 0
     }

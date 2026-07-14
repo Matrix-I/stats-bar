@@ -103,6 +103,13 @@ struct BatteryDetailView: View {
                 Divider()
             }
 
+            // 🧠 Live RAM breakdown (App / Wired / Compressed / Free + swap) — pinned right below
+            // the fans, above the battery readout. nil only if the VM stats read fails.
+            if let mem = i.memory {
+                MacMemorySection(mem: mem)
+                Divider()
+            }
+
             // Header
             HStack {
                 Text("🔋 Battery").font(.headline)

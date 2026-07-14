@@ -95,6 +95,9 @@ final class BatteryReader: ObservableObject {
         // Live fan speeds — same SMC user client, also ~1 Hz.
         i.fans = smc.readFans()
 
+        // Live RAM + swap usage (Mach VM statistics — independent of the SMC / battery gauge).
+        i.memory = MemoryStats.read()
+
         let snapshot = i
         DispatchQueue.main.async { self.info = snapshot }
     }
