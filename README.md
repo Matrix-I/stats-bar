@@ -1,5 +1,9 @@
 # cocobat + BatteryBar — a homemade coconutBattery
 
+```bash
+cd ~/Applications && xattr -dr com.apple.quarantine BatteryBar.app
+```
+
 Reads battery health from the IOKit registry `AppleSmartBattery` — the same data source coconutBattery uses. No root required.
 
 ## Files
