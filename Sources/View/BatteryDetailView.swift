@@ -38,7 +38,7 @@ struct BatteryDetailView: View {
     @State private var panelScreenHeight: CGFloat = BatteryDetailView.initialScreenHeight
 
     // Fraction of the shown-on screen's height the popover may occupy before it starts scrolling.
-    private static let panelHeightFraction: CGFloat = 0.8
+    private static let panelHeightFraction: CGFloat = 0.9
 
     // Caps the popover so it never grows past `panelHeightFraction` of the screen it's shown on —
     // beyond that, the content scrolls instead of pushing the window further down.
