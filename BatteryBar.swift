@@ -549,6 +549,11 @@ struct AndroidDeviceInfo: Identifiable {
     // debug dump, and "Charge counter" barely changes between 1s polls) — so unlike iOS/Mac's
     // "Charging with" (live V×I), this is the charger/port's negotiated ceiling, not a live reading.
     var maxChargingWatts: Double?
+    // Confirmed unavailable on Android 9–13 (checked getprop, dumpsys battery/batterystats, and
+    // sysfs — nothing exposes it). Android only added a public cycle-count property in Android 14,
+    // and only if the OEM's health HAL reports it, so this is a best-effort, unverified parse of a
+    // hypothetical "Charge cycles" line — harmless if the key doesn't exist (stays nil, row stays hidden).
+    var cycleCount: Int?
     var serial = ""
     var errorMessage: String?
     var isStale = false
@@ -777,6 +782,7 @@ final class AndroidDeviceReader: ObservableObject {
                mc > 0, mv > 0 {
                 dev.maxChargingWatts = (Double(mc) / 1_000_000.0) * (Double(mv) / 1_000_000.0)
             }
+            dev.cycleCount = Int(bat["Charge cycles"] ?? "")   // Android 14+ only, best-effort (see field doc)
             dev.externalConnected = ["AC powered", "USB powered", "Wireless powered"]
                 .contains { bat[$0] == "true" }
             dev.capturedAt = Date()
@@ -1194,6 +1200,9 @@ struct AndroidDeviceRow: View {
                 }
                 if let design = device.designCapacity {
                     InfoRow(label: "Design capacity", value: "\(design) mAh")
+                }
+                if let cc = device.cycleCount {
+                    InfoRow(label: "Cycle count", value: "\(cc)")
                 }
                 if let health = device.healthText {
                     InfoRow(label: "Health status", value: health)
