@@ -1,5 +1,5 @@
 #!/bin/bash
-# build_app.sh — compiles BatteryBar.swift and packages it into BatteryBar.app
+# build_app.sh — compiles the Sources/ tree and packages it into BatteryBar.app
 # Requires: Xcode Command Line Tools (xcode-select --install)
 
 set -euo pipefail
@@ -7,8 +7,12 @@ cd "$(dirname "$0")"
 
 APP=BatteryBar
 
-echo "🔨 Compiling $APP.swift ..."
-swiftc -O -parse-as-library "$APP.swift" -o "$APP"
+echo "🔨 Compiling $APP (Sources/*.swift) ..."
+# Compile every source file in Sources/ as one module. The other top-level *.swift files
+# (icon_gen.swift, screeninfo.swift) are standalone tools and are deliberately excluded.
+SOURCES=$(find Sources -name '*.swift')
+# shellcheck disable=SC2086
+swiftc -O -parse-as-library $SOURCES -o "$APP"
 
 echo "📦 Building the app bundle ..."
 rm -rf "$APP.app"

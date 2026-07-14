@@ -11,7 +11,7 @@ Reads battery health from the IOKit registry `AppleSmartBattery` — the same da
 | File | What it is | Requirements |
 |---|---|---|
 | `cocobat.py` | CLI script — run immediately | macOS + python3 (preinstalled) |
-| `BatteryBar.swift` | SwiftUI menu bar app | macOS 13+, Xcode CLT |
+| `Sources/` | SwiftUI menu bar app (split by layer: Model / Reader / Support / View / App) | macOS 13+, Xcode CLT |
 | `build_app.sh` | Compiles + packages the `.app` | same as above |
 
 ## 1. CLI — run immediately
@@ -42,7 +42,7 @@ open BatteryBar.app
 Or run it quickly without bundling:
 
 ```bash
-swiftc -O BatteryBar.swift -o BatteryBar && ./BatteryBar
+swiftc -O -parse-as-library $(find Sources -name '*.swift') -o BatteryBar && ./BatteryBar
 ```
 
 Launch at login: **System Settings → General → Login Items** → add `BatteryBar.app`.
