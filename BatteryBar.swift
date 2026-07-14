@@ -1322,6 +1322,7 @@ struct AndroidDevicesSection: View {
 /// ordered-in state (not mere occlusion), so covering the popover doesn't count as "closed".
 final class WindowVisibilityView: NSView {
     var onChange: ((Bool) -> Void)?
+    var onScreenHeight: ((CGFloat) -> Void)?
     private weak var observed: NSWindow?
     private var lastReported: Bool?
 
@@ -1335,6 +1336,7 @@ final class WindowVisibilityView: NSView {
             for name: NSNotification.Name in [NSWindow.didBecomeKeyNotification,
                                               NSWindow.didResignKeyNotification,
                                               NSWindow.didChangeOcclusionStateNotification,
+                                              NSWindow.didChangeScreenNotification,
                                               NSWindow.willCloseNotification] {
                 nc.addObserver(self, selector: #selector(windowChanged), name: name, object: window)
             }
@@ -1348,6 +1350,9 @@ final class WindowVisibilityView: NSView {
     }
 
     private func evaluate() {
+        // Report the visibleFrame height of the display this popover currently sits on, so the
+        // caller can cap to 80% of the *actual* screen (not a guessed one) in a multi-monitor setup.
+        if let h = observed?.screen?.visibleFrame.height { onScreenHeight?(h) }
         let visible = observed?.isVisible ?? false
         guard visible != lastReported else { return }
         lastReported = visible
@@ -1359,10 +1364,17 @@ final class WindowVisibilityView: NSView {
 
 struct WindowVisibilityReporter: NSViewRepresentable {
     let onChange: (Bool) -> Void
+    var onScreenHeight: ((CGFloat) -> Void)? = nil
     func makeNSView(context: Context) -> WindowVisibilityView {
-        let v = WindowVisibilityView(); v.onChange = onChange; return v
+        let v = WindowVisibilityView()
+        v.onChange = onChange
+        v.onScreenHeight = onScreenHeight
+        return v
     }
-    func updateNSView(_ nsView: WindowVisibilityView, context: Context) { nsView.onChange = onChange }
+    func updateNSView(_ nsView: WindowVisibilityView, context: Context) {
+        nsView.onChange = onChange
+        nsView.onScreenHeight = onScreenHeight
+    }
 }
 
 /// Reports the true (unclipped) height of the ScrollView's content, so the popover can be sized
@@ -1371,7 +1383,12 @@ struct WindowVisibilityReporter: NSViewRepresentable {
 private struct PanelHeightPreferenceKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
+        // Take the max, not the last value: the background GeometryReader emits a spurious 0 during
+        // an early layout pass alongside the real content height, and `value = nextValue()` let that
+        // 0 clobber the real measurement — leaving measuredContentHeight stuck at 0 so the popover
+        // never switched to the scrolling branch. max() keeps the real height; each layout pass
+        // recomputes from scratch, so it still tracks the content shrinking.
+        value = max(value, nextValue())
     }
 }
 
@@ -1383,16 +1400,34 @@ struct BatteryDetailView: View {
     @AppStorage("showIPhoneMenuBar") private var showIPhoneMenuBar = false
     @AppStorage("showAndroidMenuBar") private var showAndroidMenuBar = false
 
-    // Caps the popover so it never grows past 80% of the screen it's shown on — beyond that,
-    // the content scrolls instead of pushing the window further down.
-    private static var maxPanelHeight: CGFloat {
-        (NSScreen.main?.visibleFrame.height ?? 800) * 0.8
-    }
     @AppStorage("showMacFullDetails") private var showMacFullDetails = false
+    @AppStorage("showMacPowerLiveDetails") private var showMacPowerLiveDetails = false
+
+    // visibleFrame height of the screen the popover is *actually* shown on. MenuBarExtra can open
+    // the popover on any display (in a multi-monitor setup it follows the active menu bar, not
+    // necessarily the primary screen), so WindowVisibilityReporter feeds us the real one via
+    // `window.screen`. Seeded with a sensible menu-bar-screen guess for the very first layout pass.
+    @State private var panelScreenHeight: CGFloat = BatteryDetailView.initialScreenHeight
+
+    // Fraction of the shown-on screen's height the popover may occupy before it starts scrolling.
+    private static let panelHeightFraction: CGFloat = 0.8
+
+    // Caps the popover so it never grows past `panelHeightFraction` of the screen it's shown on —
+    // beyond that, the content scrolls instead of pushing the window further down.
+    private var maxPanelHeight: CGFloat { panelScreenHeight * Self.panelHeightFraction }
+
+    // Best guess before the popover window exists: the menu-bar screen (frame origin (0,0) in
+    // AppKit's global space — rock-solid, unlike screens[] order or focus-following NSScreen.main).
+    private static var initialScreenHeight: CGFloat {
+        let menuBarScreen = NSScreen.screens.first(where: { $0.frame.origin == .zero })
+            ?? NSScreen.screens.first
+            ?? NSScreen.main
+        return menuBarScreen?.visibleFrame.height ?? 800
+    }
+
     // Starts pinned to the cap so the very first layout pass is never 0pt tall (which made the
     // popover invisible) — GeometryReader below then corrects it down to the content's real size.
-    @State private var measuredContentHeight: CGFloat = Self.maxPanelHeight
-    @AppStorage("showMacPowerLiveDetails") private var showMacPowerLiveDetails = false
+    @State private var measuredContentHeight: CGFloat = BatteryDetailView.initialScreenHeight * BatteryDetailView.panelHeightFraction
 
     var body: some View {
         // Render un-scrolled by default (identical to the plain auto-sizing VStack this used to
@@ -1401,21 +1436,24 @@ struct BatteryDetailView: View {
         // ScrollView with a concrete fixed height — never an ambiguous/ideal-only constraint,
         // which is what made the window vanish before.
         Group {
-            if measuredContentHeight > Self.maxPanelHeight {
+            if measuredContentHeight > maxPanelHeight {
                 ScrollView { panelContent }
-                    .frame(height: Self.maxPanelHeight)
+                    .frame(height: maxPanelHeight)
             } else {
                 panelContent
             }
         }
         .frame(width: 300)
-        .background(WindowVisibilityReporter { open in
-            reader.setPanelOpen(open)
-            if open {
-                iosReader.refresh()      // one immediate read on open; it stays on its slow cadence
-                androidReader.refresh()
-            }
-        })
+        .background(WindowVisibilityReporter(
+            onChange: { open in
+                reader.setPanelOpen(open)
+                if open {
+                    iosReader.refresh()      // one immediate read on open; it stays on its slow cadence
+                    androidReader.refresh()
+                }
+            },
+            onScreenHeight: { h in if h > 0 { panelScreenHeight = h } }
+        ))
     }
 
     @ViewBuilder
