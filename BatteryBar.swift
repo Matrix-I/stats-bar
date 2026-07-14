@@ -1377,6 +1377,23 @@ struct WindowVisibilityReporter: NSViewRepresentable {
     }
 }
 
+/// Placed inside a SwiftUI ScrollView, this walks up to the backing NSScrollView and forces the
+/// thin *overlay* scrollers. Without it, a system set to "Show scroll bars: Always" gives the wide
+/// legacy scroller (a permanent ~15pt track); overlay scrollers are ~half that and auto-hide.
+struct OverlayScrollerConfigurator: NSViewRepresentable {
+    final class FinderView: NSView {
+        private func apply() {
+            guard let scrollView = enclosingScrollView else { return }
+            scrollView.scrollerStyle = .overlay
+            scrollView.verticalScroller?.controlSize = .small
+        }
+        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); DispatchQueue.main.async { [weak self] in self?.apply() } }
+        override func viewDidMoveToSuperview() { super.viewDidMoveToSuperview(); DispatchQueue.main.async { [weak self] in self?.apply() } }
+    }
+    func makeNSView(context: Context) -> FinderView { FinderView(frame: .zero) }
+    func updateNSView(_ nsView: FinderView, context: Context) {}
+}
+
 /// Reports the true (unclipped) height of the ScrollView's content, so the popover can be sized
 /// to `min(content height, cap)` instead of relying on ScrollView's own ideal size — which SwiftUI
 /// reports as ~0 in an auto-sizing container like MenuBarExtra(.window), making the window vanish.
@@ -1437,7 +1454,7 @@ struct BatteryDetailView: View {
         // which is what made the window vanish before.
         Group {
             if measuredContentHeight > maxPanelHeight {
-                ScrollView { panelContent }
+                ScrollView { panelContent.background(OverlayScrollerConfigurator()) }
                     .frame(height: maxPanelHeight)
             } else {
                 panelContent
