@@ -522,6 +522,337 @@ final class IOSDeviceReader: ObservableObject {
     }
 }
 
+// MARK: - Android device model + reader
+
+/// Android exposes far less over USB than libimobiledevice does for iOS: `dumpsys battery` has no
+/// cycle count or design/full-charge capacity on stock Android, so those fields simply don't exist
+/// here — the UI only shows what's actually available (charge %, voltage, temperature, health).
+struct AndroidDeviceInfo: Identifiable {
+    let id: String                // adb serial
+    var name = ""
+    var manufacturer = ""
+    var androidVersion = ""
+    var levelPercent: Int?
+    var voltageV: Double?
+    var temperatureC: Double?
+    var technology = ""
+    var isCharging = false
+    var externalConnected = false
+    var fullyCharged = false
+    var healthText: String?
+    // From `dumpsys batterystats` (not the fast per-second `dumpsys battery`): Android's own
+    // coulomb-counter-learned full-charge estimate and the OEM-declared rated/design capacity.
+    // Fetched once per connection and cached — see AndroidDeviceReader.readCapacity.
+    var maxCapacity: Int?          // mAh — "Estimated battery capacity" (health-adjusted)
+    var designCapacity: Int?       // mAh — "Capacity:" under "Estimated power use" (rated by OEM)
+    // Android has no exposed instantaneous current (no `current_now` without root, no health HAL
+    // debug dump, and "Charge counter" barely changes between 1s polls) — so unlike iOS/Mac's
+    // "Charging with" (live V×I), this is the charger/port's negotiated ceiling, not a live reading.
+    var maxChargingWatts: Double?
+    var serial = ""
+    var errorMessage: String?
+    var isStale = false
+    var capturedAt: Date?
+
+    var healthPercent: Double? {
+        guard let max = maxCapacity, max > 0, let design = designCapacity, design > 0 else { return nil }
+        return Double(max) / Double(design) * 100
+    }
+}
+
+private func androidStatusText(_ code: Int?) -> (charging: Bool, full: Bool) {
+    (code == 2, code == 5)
+}
+
+private func androidHealthText(_ code: Int?) -> String? {
+    switch code {
+    case 2: return "Good"
+    case 3: return "Overheat"
+    case 4: return "Dead"
+    case 5: return "Over voltage"
+    case 6: return "Unspecified failure"
+    case 7: return "Cold"
+    default: return nil   // 1 (unknown) or missing — not worth showing
+    }
+}
+
+final class AndroidDeviceReader: ObservableObject {
+    @Published var devices: [AndroidDeviceInfo] = []
+    @Published var toolsMissing = false
+    @Published var statusMessage: String?
+
+    private var isBusy = false
+    private var timer: Timer?
+
+    private var lastGood: [AndroidDeviceInfo] = []
+    private var lastGoodAt: Date?
+    private static let staleGraceGone: TimeInterval = 5
+    private static let staleGraceUnreadable: TimeInterval = 30
+    private static let toolTimeout: TimeInterval = 4
+
+    /// `dumpsys batterystats` (unlike the fast per-second `dumpsys battery`) can dump several MB of
+    /// history and take a while, so it's only fetched once per connected serial and cached — not
+    /// worth re-running every second for numbers that barely change. Only touched from doRefresh(),
+    /// which refresh()'s isBusy guard ensures never runs concurrently with itself.
+    private var capacityCache: [String: (max: Int?, design: Int?)] = [:]
+    private var capacityLastAttempt: [String: Date] = [:]
+    private static let capacityRetryInterval: TimeInterval = 30
+
+    private static let searchDirs = ["/opt/homebrew/bin/", "/usr/local/bin/", "/usr/bin/"]
+
+    init() {
+        refresh()
+        let t = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            self?.refresh()
+        }
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
+    }
+
+    func refresh() {
+        guard !isBusy else { return }
+        isBusy = true
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            self?.doRefresh()
+        }
+    }
+
+    private func toolPath(_ name: String) -> String? {
+        for dir in Self.searchDirs {
+            let p = dir + name
+            if FileManager.default.isExecutableFile(atPath: p) { return p }
+        }
+        return nil
+    }
+
+    /// Same concurrent-pipe-drain + timeout approach as the iOS reader's `run` — adb can hang on a
+    /// device that's mid-unplug, and this must never wedge `isBusy`.
+    private func run(_ path: String, _ args: [String]) -> Data? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = args
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        process.standardOutput = outPipe
+        process.standardError = errPipe
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+
+        let group = DispatchGroup()
+        var outData = Data()
+        group.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+            group.leave()
+        }
+        group.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = errPipe.fileHandleForReading.readDataToEndOfFile()
+            group.leave()
+        }
+
+        if group.wait(timeout: .now() + Self.toolTimeout) == .timedOut {
+            process.terminate()
+            _ = group.wait(timeout: .now() + 1)
+            return nil
+        }
+        process.waitUntilExit()
+        return process.terminationStatus == 0 ? outData : nil
+    }
+
+    /// Parses `adb devices -l` into (serial, state) pairs — state is "device", "unauthorized", or
+    /// "offline". Unlike idevice_id, adb only needs one call (no separate USB-enumeration retry loop).
+    private func listDevices(_ path: String) -> [(serial: String, state: String)] {
+        guard let data = run(path, ["devices", "-l"]),
+              let s = String(data: data, encoding: .utf8) else { return [] }
+        return s.split(whereSeparator: \.isNewline)
+            .map(String.init)
+            .filter { $0 != "List of devices attached" }
+            .compactMap { line in
+                let parts = line.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+                guard parts.count == 2 else { return nil }
+                return (serial: String(parts[0]), state: String(parts[1]).split(separator: " ").first.map(String.init) ?? "")
+            }
+    }
+
+    private func getprop(_ path: String, serial: String, key: String) -> String? {
+        guard let data = run(path, ["-s", serial, "shell", "getprop", key]),
+              let str = String(data: data, encoding: .utf8) else { return nil }
+        let trimmed = str.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// `dumpsys battery` prints plain "  Key: value" lines — no plist/JSON on Android.
+    private func readBattery(_ path: String, serial: String) -> [String: String]? {
+        guard let data = run(path, ["-s", serial, "shell", "dumpsys", "battery"]),
+              let s = String(data: data, encoding: .utf8) else { return nil }
+        var out: [String: String] = [:]
+        for line in s.split(whereSeparator: \.isNewline) {
+            guard let colon = line.firstIndex(of: ":") else { continue }
+            let key = line[line.startIndex..<colon].trimmingCharacters(in: .whitespaces)
+            let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+            out[key] = value
+        }
+        return out.isEmpty ? nil : out
+    }
+
+    /// `dumpsys batterystats` has no plist/JSON either, just free-form text. Two lines matter:
+    ///   "Estimated battery capacity: 3932 mAh"       — Android's coulomb-counter learned full charge
+    ///   "Capacity: 4000, Computed drain: ..., ..."   — OEM-declared rated/design capacity, under the
+    ///                                                   "Estimated power use (mAh):" section
+    /// Confirmed against a real device (Redmi Note 7): 3932 / 4000 mAh, matching its published spec.
+    private func readCapacity(_ path: String, serial: String) -> (max: Int?, design: Int?) {
+        guard let data = run(path, ["-s", serial, "shell", "dumpsys", "batterystats"]),
+              let s = String(data: data, encoding: .utf8) else { return (nil, nil) }
+        var maxCap: Int?
+        var designCap: Int?
+        for line in s.split(whereSeparator: \.isNewline) {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if maxCap == nil, t.hasPrefix("Estimated battery capacity:") {
+                let rest = t.dropFirst("Estimated battery capacity:".count)
+                    .replacingOccurrences(of: "mAh", with: "")
+                maxCap = Int(rest.trimmingCharacters(in: .whitespaces))
+            } else if designCap == nil, t.hasPrefix("Capacity:") {
+                let rest = t.dropFirst("Capacity:".count)
+                if let comma = rest.firstIndex(of: ",") {
+                    designCap = Int(rest[rest.startIndex..<comma].trimmingCharacters(in: .whitespaces))
+                }
+            }
+            if maxCap != nil && designCap != nil { break }
+        }
+        return (maxCap, designCap)
+    }
+
+    private func doRefresh() {
+        guard let adbPath = toolPath("adb") else {
+            publish(devices: [], toolsMissing: true, status: nil)
+            return
+        }
+
+        let listed = listDevices(adbPath)
+        guard !listed.isEmpty else {
+            publish(devices: [], toolsMissing: false,
+                    status: "No Android device found over USB.\nPlug in the cable and enable USB debugging.")
+            return
+        }
+
+        var results: [AndroidDeviceInfo] = []
+        for entry in listed {
+            var dev = AndroidDeviceInfo(id: entry.serial)
+            dev.serial = entry.serial
+
+            guard entry.state == "device" else {
+                dev.errorMessage = entry.state == "unauthorized"
+                    ? "Unlock the phone and tap Allow on the \"Allow USB debugging?\" prompt."
+                    : "Device is \(entry.state) — reconnect the cable."
+                results.append(dev)
+                continue
+            }
+
+            dev.name = getprop(adbPath, serial: entry.serial, key: "ro.product.model") ?? entry.serial
+            dev.manufacturer = getprop(adbPath, serial: entry.serial, key: "ro.product.manufacturer") ?? ""
+            dev.androidVersion = getprop(adbPath, serial: entry.serial, key: "ro.build.version.release") ?? ""
+
+            guard let bat = readBattery(adbPath, serial: entry.serial) else {
+                dev.errorMessage = "Couldn't read battery status — reconnect and unlock the phone."
+                results.append(dev)
+                continue
+            }
+
+            let level = Int(bat["level"] ?? "")
+            let scale = Int(bat["scale"] ?? "") ?? 100
+            if let level, scale > 0 { dev.levelPercent = level * 100 / scale }
+            if let v = Int(bat["voltage"] ?? "") { dev.voltageV = Double(v) / 1000.0 }
+            if let t = Int(bat["temperature"] ?? "") { dev.temperatureC = Double(t) / 10.0 }
+            dev.technology = bat["technology"] ?? ""
+            let statusCode = Int(bat["status"] ?? "")
+            let (charging, full) = androidStatusText(statusCode)
+            dev.isCharging = charging
+            dev.fullyCharged = full
+            dev.healthText = androidHealthText(Int(bat["health"] ?? ""))
+            if let mc = Int(bat["Max charging current"] ?? ""), let mv = Int(bat["Max charging voltage"] ?? ""),
+               mc > 0, mv > 0 {
+                dev.maxChargingWatts = (Double(mc) / 1_000_000.0) * (Double(mv) / 1_000_000.0)
+            }
+            dev.externalConnected = ["AC powered", "USB powered", "Wireless powered"]
+                .contains { bat[$0] == "true" }
+            dev.capturedAt = Date()
+
+            if let cached = capacityCache[entry.serial] {
+                dev.maxCapacity = cached.max
+                dev.designCapacity = cached.design
+            } else {
+                let lastAttempt = capacityLastAttempt[entry.serial]
+                if lastAttempt == nil || Date().timeIntervalSince(lastAttempt!) > Self.capacityRetryInterval {
+                    capacityLastAttempt[entry.serial] = Date()
+                    let cap = readCapacity(adbPath, serial: entry.serial)
+                    if cap.max != nil || cap.design != nil {
+                        capacityCache[entry.serial] = cap
+                        dev.maxCapacity = cap.max
+                        dev.designCapacity = cap.design
+                    }
+                }
+            }
+
+            results.append(dev)
+        }
+
+        publish(devices: results, toolsMissing: false, status: nil)
+    }
+
+    private func publish(devices fresh: [AndroidDeviceInfo], toolsMissing: Bool, status: String?) {
+        DispatchQueue.main.async {
+            self.isBusy = false
+
+            if toolsMissing {
+                self.toolsMissing = true
+                self.devices = []
+                self.statusMessage = nil
+                return
+            }
+            self.toolsMissing = false
+
+            let now = Date()
+            let sinceGood = self.lastGoodAt.map { now.timeIntervalSince($0) } ?? .infinity
+
+            if fresh.isEmpty {
+                if sinceGood < Self.staleGraceGone, !self.lastGood.isEmpty {
+                    self.devices = self.lastGood.map { var d = $0; d.isStale = true; return d }
+                    self.statusMessage = nil
+                } else {
+                    self.devices = []
+                    self.statusMessage = status
+                        ?? "No Android device found over USB.\nPlug in the cable and enable USB debugging."
+                }
+                return
+            }
+
+            var merged: [AndroidDeviceInfo] = []
+            var freshGood: [AndroidDeviceInfo] = []
+            for dev in fresh {
+                if dev.errorMessage != nil, sinceGood < Self.staleGraceUnreadable,
+                   let prev = self.lastGood.first(where: { $0.id == dev.id }) {
+                    var s = prev; s.isStale = true
+                    merged.append(s)
+                } else {
+                    merged.append(dev)
+                    if dev.errorMessage == nil { freshGood.append(dev) }
+                }
+            }
+            self.devices = merged
+            self.statusMessage = nil
+
+            if !freshGood.isEmpty {
+                self.lastGood = freshGood
+                self.lastGoodAt = now
+            }
+        }
+    }
+}
+
 // MARK: - Helpers
 
 func healthColor(_ p: Double) -> Color {
@@ -649,23 +980,24 @@ struct BatteryGlyph: View {
 /// Mac + iPhone in one menu-bar item: laptop glyph + Mac battery, then iPhone glyph +
 /// iPhone battery, all composited into a SINGLE template image. Baking it avoids the
 /// HStack reordering the real MenuBarExtra applies to multi-view labels.
-func dualMenuBarImage(macPct: Int, macCharging: Bool, iosPct: Int, iosCharging: Bool, showPercent: Bool) -> NSImage {
+func dualMenuBarImage(macPct: Int, macCharging: Bool, phonePct: Int, phoneCharging: Bool,
+                       phoneSymbol: String, showPercent: Bool) -> NSImage {
     let h: CGFloat = 13, symH: CGFloat = 10
     let macBat = batteryMenuBarImage(level: Double(macPct) / 100, charging: macCharging, percent: showPercent ? macPct : nil)
-    let iosBat = batteryMenuBarImage(level: Double(iosPct) / 100, charging: iosCharging, percent: showPercent ? iosPct : nil)
+    let phoneBat = batteryMenuBarImage(level: Double(phonePct) / 100, charging: phoneCharging, percent: showPercent ? phonePct : nil)
     func symbol(_ name: String) -> NSImage? {
         guard let s = NSImage(systemSymbolName: name, accessibilityDescription: nil) else { return nil }
         s.isTemplate = true
         return s
     }
-    let laptop = symbol("laptopcomputer"), phone = symbol("iphone")
+    let laptop = symbol("laptopcomputer"), phone = symbol(phoneSymbol)
     func widthOf(_ img: NSImage?) -> CGFloat {
         guard let img else { return 0 }
         return symH * (img.size.width / max(img.size.height, 1))
     }
     let laptopW = widthOf(laptop), phoneW = widthOf(phone)
     let gap: CGFloat = 2.5, bigGap: CGFloat = 6
-    let total = laptopW + gap + macBat.size.width + bigGap + phoneW + gap + iosBat.size.width
+    let total = laptopW + gap + macBat.size.width + bigGap + phoneW + gap + phoneBat.size.width
 
     let img = NSImage(size: NSSize(width: total, height: h), flipped: false) { _ in
         var x: CGFloat = 0
@@ -678,7 +1010,7 @@ func dualMenuBarImage(macPct: Int, macCharging: Bool, iosPct: Int, iosCharging: 
         phone?.draw(in: NSRect(x: x, y: (h - symH) / 2, width: phoneW, height: symH),
                     from: .zero, operation: .sourceOver, fraction: 1)
         x += phoneW + gap
-        iosBat.draw(in: NSRect(x: x, y: 0, width: iosBat.size.width, height: h),
+        phoneBat.draw(in: NSRect(x: x, y: 0, width: phoneBat.size.width, height: h),
                     from: .zero, operation: .sourceOver, fraction: 1)
         return true
     }
@@ -815,6 +1147,114 @@ struct IOSDevicesSection: View {
     }
 }
 
+struct AndroidDeviceRow: View {
+    let device: AndroidDeviceInfo
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(device.name).font(.caption).fontWeight(.semibold).lineLimit(1)
+                Spacer()
+                let sub = [device.manufacturer.isEmpty ? nil : device.manufacturer,
+                           device.androidVersion.isEmpty ? nil : "Android \(device.androidVersion)"]
+                    .compactMap { $0 }.joined(separator: " · ")
+                if !sub.isEmpty {
+                    Text(sub).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+
+            if device.isStale {
+                Text("⟳ last known data — USB connection reconnecting")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+
+            if let err = device.errorMessage {
+                Text(err).font(.caption2).foregroundStyle(.orange)
+            } else {
+                if let level = device.levelPercent {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("Charge").font(.caption2).foregroundStyle(.secondary)
+                        Spacer()
+                        Text("\(level)%").font(.caption).fontWeight(.medium).monospacedDigit()
+                    }
+                    BarView(pct: Double(level), color: .blue)
+                }
+                if let hp = device.healthPercent {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("Health (vs design)").font(.caption2).foregroundStyle(.secondary)
+                        Spacer()
+                        Text(String(format: "%.1f%%", hp))
+                            .font(.caption).fontWeight(.medium).monospacedDigit()
+                            .foregroundStyle(healthColor(hp))
+                    }
+                    BarView(pct: hp, color: healthColor(hp))
+                }
+                if let max = device.maxCapacity {
+                    InfoRow(label: "Full charge capacity", value: "\(max) mAh")
+                }
+                if let design = device.designCapacity {
+                    InfoRow(label: "Design capacity", value: "\(design) mAh")
+                }
+                if let health = device.healthText {
+                    InfoRow(label: "Health status", value: health)
+                }
+                if let t = device.temperatureC {
+                    InfoRow(label: "Temperature", value: String(format: "%.1f °C", t))
+                }
+                if let v = device.voltageV {
+                    InfoRow(label: "Voltage", value: String(format: "%.2f V", v))
+                }
+                if !device.technology.isEmpty {
+                    InfoRow(label: "Technology", value: device.technology)
+                }
+                if device.isCharging, let w = device.maxChargingWatts {
+                    InfoRow(label: "Max charging power", value: String(format: "%.1f W", w))
+                }
+                if device.externalConnected {
+                    InfoRow(label: "Status",
+                            value: device.isCharging ? "Charging"
+                                : (device.fullyCharged ? "Fully charged" : "Plugged in, not charging"))
+                }
+                if !device.serial.isEmpty {
+                    InfoRow(label: "Serial", value: device.serial)
+                }
+            }
+        }
+    }
+}
+
+struct AndroidDevicesSection: View {
+    @ObservedObject var reader: AndroidDeviceReader
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("🤖 Android (USB)").font(.caption).foregroundStyle(.secondary)
+
+            if reader.toolsMissing {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Missing adb.").font(.caption2).foregroundStyle(.orange)
+                    Text("brew install --cask android-platform-tools")
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            } else if let status = reader.statusMessage {
+                Text(status).font(.caption2).foregroundStyle(.secondary)
+            } else if reader.devices.isEmpty {
+                Text("No devices connected.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(reader.devices) { device in
+                        AndroidDeviceRow(device: device)
+                        if device.id != reader.devices.last?.id { Divider() }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Reports when the hosting window becomes visible / hidden. MenuBarExtra(.window) builds its
 /// content once and just orders the popover window in and out, so SwiftUI's `.onAppear` doesn't
 /// refire per open — observing the NSWindow directly is the reliable signal. `isVisible` tracks
@@ -867,8 +1307,10 @@ struct WindowVisibilityReporter: NSViewRepresentable {
 struct BatteryDetailView: View {
     @ObservedObject var reader: BatteryReader
     @ObservedObject var iosReader: IOSDeviceReader
+    @ObservedObject var androidReader: AndroidDeviceReader
     @AppStorage("showMenuBarPercent") private var showMenuBarPercent = true
     @AppStorage("showIPhoneMenuBar") private var showIPhoneMenuBar = false
+    @AppStorage("showAndroidMenuBar") private var showAndroidMenuBar = false
 
     var body: some View {
         let i = reader.info
@@ -958,9 +1400,15 @@ struct BatteryDetailView: View {
 
             Divider()
 
+            AndroidDevicesSection(reader: androidReader)
+                .onAppear { androidReader.refresh() }
+
+            Divider()
+
             VStack(alignment: .leading, spacing: 4) {
                 Toggle("Show % in menu bar", isOn: $showMenuBarPercent)
                 Toggle("Show iPhone in menu bar", isOn: $showIPhoneMenuBar)
+                Toggle("Show Android in menu bar", isOn: $showAndroidMenuBar)
             }
             .font(.caption)
             .toggleStyle(.switch)
@@ -972,6 +1420,7 @@ struct BatteryDetailView: View {
                 Button("Refresh") {
                     reader.refresh()
                     iosReader.refresh()
+                    androidReader.refresh()
                 }
                 Spacer()
                 Button("Quit") { NSApp.terminate(nil) }
@@ -982,7 +1431,10 @@ struct BatteryDetailView: View {
         .frame(width: 300)
         .background(WindowVisibilityReporter { open in
             reader.setPanelOpen(open)
-            if open { iosReader.refresh() }   // one immediate iOS read on open; it stays on its slow cadence
+            if open {
+                iosReader.refresh()      // one immediate read on open; it stays on its slow cadence
+                androidReader.refresh()
+            }
         })
     }
 
@@ -1021,18 +1473,29 @@ struct BatteryDetailView: View {
 }
 
 /// Single menu bar item. Mac-only: one line, battery-shape icon (+ optional %).
-/// With "Show iPhone in menu bar" on and a device readable: two compact stacked
-/// lines instead — laptop/iphone glyphs so the two percentages aren't ambiguous.
+/// With "Show iPhone/Android in menu bar" on and a device readable: two compact stacked
+/// lines instead — laptop/phone glyphs so the two percentages aren't ambiguous. Only one
+/// mobile device is ever shown at a time (iPhone takes priority when both are connected),
+/// to keep the menu bar from growing a third glyph.
 struct MenuBarLabel: View {
     @ObservedObject var reader: BatteryReader
     @ObservedObject var iosReader: IOSDeviceReader
+    @ObservedObject var androidReader: AndroidDeviceReader
     @AppStorage("showMenuBarPercent") private var showMacPercent = true
     @AppStorage("showIPhoneMenuBar") private var showIPhoneMenuBar = false
+    @AppStorage("showAndroidMenuBar") private var showAndroidMenuBar = false
 
     private var iosDevice: IOSDeviceInfo? {
         guard showIPhoneMenuBar,
               let device = iosReader.devices.first,
               device.chargePercent != nil else { return nil }
+        return device
+    }
+
+    private var androidDevice: AndroidDeviceInfo? {
+        guard showAndroidMenuBar,
+              let device = androidReader.devices.first,
+              device.levelPercent != nil else { return nil }
         return device
     }
 
@@ -1043,8 +1506,16 @@ struct MenuBarLabel: View {
             // Both devices, baked into one image — no HStack for the menu bar to reverse.
             Image(nsImage: dualMenuBarImage(macPct: macPct,
                                             macCharging: reader.info.isCharging,
-                                            iosPct: Int(iosCp.rounded()),
-                                            iosCharging: ios.isCharging,
+                                            phonePct: Int(iosCp.rounded()),
+                                            phoneCharging: ios.isCharging,
+                                            phoneSymbol: "iphone",
+                                            showPercent: showMacPercent))
+        } else if let android = androidDevice, let level = android.levelPercent {
+            Image(nsImage: dualMenuBarImage(macPct: macPct,
+                                            macCharging: reader.info.isCharging,
+                                            phonePct: level,
+                                            phoneCharging: android.isCharging,
+                                            phoneSymbol: "candybarphone",
                                             showPercent: showMacPercent))
         } else {
             // Number lives inside the battery, so there's just one element — no HStack
@@ -1070,12 +1541,13 @@ struct BatteryBarApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var reader = BatteryReader()
     @StateObject private var iosReader = IOSDeviceReader()
+    @StateObject private var androidReader = AndroidDeviceReader()
 
     var body: some Scene {
         MenuBarExtra {
-            BatteryDetailView(reader: reader, iosReader: iosReader)
+            BatteryDetailView(reader: reader, iosReader: iosReader, androidReader: androidReader)
         } label: {
-            MenuBarLabel(reader: reader, iosReader: iosReader)
+            MenuBarLabel(reader: reader, iosReader: iosReader, androidReader: androidReader)
         }
         .menuBarExtraStyle(.window)
     }
