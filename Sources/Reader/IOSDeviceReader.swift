@@ -18,7 +18,10 @@ final class IOSDeviceReader: ObservableObject {
     /// Cache of the most recently read devices (only touched on the main thread, inside publish) —
     /// used to keep showing data when the USB connection drops briefly instead of the device "vanishing".
     private var lastGood: [IOSDeviceInfo] = []
-    private var lastGoodAt: Date?
+    /// Last time each UDID appeared in a fresh enumeration, so a cache entry is pruned once its
+    /// device has been gone longer than staleGraceGone — regardless of whether *other* devices are
+    /// still reading. A single global timestamp can't express "device A left but B is fine".
+    private var lastSeenAt: [String: Date] = [:]
     /// How long to keep showing the last reading after reads stop succeeding, before the device
     /// disappears. Short when it drops out of USB enumeration entirely (usually a real unplug),
     /// longer when it's still enumerated but the battery read fails (e.g. locked / another app holds
@@ -71,6 +74,22 @@ final class IOSDeviceReader: ObservableObject {
         return []
     }
 
+    /// Reads the lockdown battery domain (com.apple.mobile.battery). Unlike the diagnostics
+    /// registry, this is a plain lockdownd value read, not a "started" service, so it keeps working
+    /// while the device sits at the passcode lock screen — but it only exposes a coarse 0–100%
+    /// charge level and the charging flags, never the mAh / health / cycle-count that live behind
+    /// the (unlock-gated) diagnostics relay.
+    private func readBatteryDomain(_ path: String, udid: String)
+        -> (pct: Double, isCharging: Bool, external: Bool, full: Bool)? {
+        guard let data = DeviceTool.run(path, ["-u", udid, "-q", "com.apple.mobile.battery", "-x"]),
+              let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
+              let pct = intOrNil(plist["BatteryCurrentCapacity"]) else { return nil }
+        return (Double(pct),
+                plist["BatteryIsCharging"] as? Bool ?? false,
+                plist["ExternalConnected"] as? Bool ?? false,
+                plist["FullyCharged"] as? Bool ?? false)
+    }
+
     /// Reads ioregentry AppleSmartBattery, retrying since diagnostics also drops out temporarily.
     private func readBatteryRegistry(_ path: String, udid: String) -> [String: Any]? {
         for attempt in 0..<3 {
@@ -102,28 +121,44 @@ final class IOSDeviceReader: ObservableObject {
         var results: [IOSDeviceInfo] = []
         for udid in udids {
             var dev = IOSDeviceInfo(id: udid)
-            dev.name = infoValue(ideviceInfoPath, udid: udid, key: "DeviceName") ?? udid
+            let named = infoValue(ideviceInfoPath, udid: udid, key: "DeviceName")
+            dev.name = named ?? udid
             dev.model = infoValue(ideviceInfoPath, udid: udid, key: "ProductType") ?? ""
             dev.iosVersion = infoValue(ideviceInfoPath, udid: udid, key: "ProductVersion") ?? ""
+            // A successful DeviceName read means the lockdown handshake completed, i.e. the device
+            // is paired/trusted. If it failed, the device isn't trusted (or just left the bus) —
+            // a different problem from a merely-locked device, handled separately below.
+            let trusted = named != nil
 
-            guard let reg = readBatteryRegistry(diagnosticsPath, udid: udid) else {
-                dev.errorMessage = "Couldn't read diagnostics — unlock the device + tap Trust."
-                results.append(dev)
-                continue
+            if let reg = readBatteryRegistry(diagnosticsPath, udid: udid) {
+                dev.serial = reg["Serial"] as? String ?? ""
+                dev.designCapacity = intOrNil(reg["DesignCapacity"])
+                dev.maxCapacity = intOrNil(reg["AppleRawMaxCapacity"]) ?? intOrNil(reg["NominalChargeCapacity"])
+                dev.currentCapacity = intOrNil(reg["AppleRawCurrentCapacity"])
+                dev.cycleCount = intOrNil(reg["CycleCount"])
+                if let t = intOrNil(reg["Temperature"]) { dev.temperatureC = Double(t) / 100.0 }
+                if let v = intOrNil(reg["Voltage"]) { dev.voltageV = Double(v) / 1000.0 }
+                if let a = signedIntOrNil(reg["Amperage"]) { dev.amperageA = Double(a) / 1000.0 }
+                dev.isCharging = reg["IsCharging"] as? Bool ?? false
+                dev.externalConnected = reg["ExternalConnected"] as? Bool ?? false
+                dev.fullyCharged = reg["FullyCharged"] as? Bool ?? false
+                dev.capturedAt = Date()
+            } else if trusted {
+                // Diagnostics relay is refused while the device sits at the passcode lock screen
+                // (lockdownd returns PASSWORD_PROTECTED), so the detailed registry is unreadable.
+                // The device is still here and trusted, though — fall back to the lockdown battery
+                // domain for a live charge %, and let publish() keep the last-known health on
+                // screen (grafted from cache) rather than dropping to an error.
+                dev.isLocked = true
+                if let batt = readBatteryDomain(ideviceInfoPath, udid: udid) {
+                    dev.lockedChargePercent = batt.pct
+                    dev.isCharging = batt.isCharging
+                    dev.externalConnected = batt.external
+                    dev.fullyCharged = batt.full
+                }
+            } else {
+                dev.errorMessage = "Couldn't reach the device — unlock it and tap Trust."
             }
-
-            dev.serial = reg["Serial"] as? String ?? ""
-            dev.designCapacity = intOrNil(reg["DesignCapacity"])
-            dev.maxCapacity = intOrNil(reg["AppleRawMaxCapacity"]) ?? intOrNil(reg["NominalChargeCapacity"])
-            dev.currentCapacity = intOrNil(reg["AppleRawCurrentCapacity"])
-            dev.cycleCount = intOrNil(reg["CycleCount"])
-            if let t = intOrNil(reg["Temperature"]) { dev.temperatureC = Double(t) / 100.0 }
-            if let v = intOrNil(reg["Voltage"]) { dev.voltageV = Double(v) / 1000.0 }
-            if let a = signedIntOrNil(reg["Amperage"]) { dev.amperageA = Double(a) / 1000.0 }
-            dev.isCharging = reg["IsCharging"] as? Bool ?? false
-            dev.externalConnected = reg["ExternalConnected"] as? Bool ?? false
-            dev.fullyCharged = reg["FullyCharged"] as? Bool ?? false
-            dev.capturedAt = Date()
 
             results.append(dev)
         }
@@ -144,13 +179,16 @@ final class IOSDeviceReader: ObservableObject {
             self.toolsMissing = false
 
             let now = Date()
-            let sinceGood = self.lastGoodAt.map { now.timeIntervalSince($0) } ?? .infinity
+            // Note every UDID currently on the bus (locked/errored devices count as present too),
+            // so cache staleness below is judged per-device rather than by a single global clock.
+            for dev in fresh { self.lastSeenAt[dev.id] = now }
 
             // Empty enumeration → device is off the USB bus. Ride out a brief blip, then let it go:
             // a deliberate unplug should clear within a few seconds, not linger.
             if fresh.isEmpty {
-                if sinceGood < Self.staleGraceGone, !self.lastGood.isEmpty {
-                    self.devices = self.lastGood.map { var d = $0; d.isStale = true; return d }
+                let recent = self.lastGood.filter { self.seenWithin(Self.staleGraceGone, $0.id, now) }
+                if !recent.isEmpty {
+                    self.devices = recent.map { var d = $0; d.isStale = true; return d }
                     self.statusMessage = nil
                 } else {
                     self.devices = []
@@ -160,30 +198,70 @@ final class IOSDeviceReader: ObservableObject {
                 return
             }
 
-            // Enumeration succeeded: a device whose battery read failed briefly reuses the last good
-            // data; genuinely fresh reads are shown as-is.
+            // Enumeration succeeded. Each fresh read is one of three kinds:
+            //  • full read (unlocked)      → shown as-is, becomes the new cached baseline;
+            //  • locked read (isLocked)    → live charge only, so graft the last-known health from
+            //                                cache and keep it on screen indefinitely (health barely
+            //                                changes; timestamped in the UI). Never a hard error;
+            //  • hard failure (errorMessage) → untrusted / handshake dropped: ride out on *this*
+            //                                device's own cached data for the grace window, then
+            //                                surface the error.
             var merged: [IOSDeviceInfo] = []
             var freshGood: [IOSDeviceInfo] = []
             for dev in fresh {
-                if dev.errorMessage != nil, sinceGood < Self.staleGraceUnreadable,
-                   let prev = self.lastGood.first(where: { $0.id == dev.id }) {
+                if dev.errorMessage == nil, !dev.isLocked {
+                    merged.append(dev)
+                    freshGood.append(dev)
+                } else if dev.isLocked {
+                    var m = dev
+                    if let prev = self.lastGood.first(where: { $0.id == dev.id }) {
+                        // Graft the static health figures; leave currentCapacity/amperage/temp/
+                        // voltage unset so charge stays live (lockedChargePercent) and no stale
+                        // dynamic values are shown.
+                        m.maxCapacity = prev.maxCapacity
+                        m.designCapacity = prev.designCapacity
+                        m.cycleCount = prev.cycleCount
+                        m.serial = prev.serial
+                        m.capturedAt = prev.capturedAt   // when those health figures were actually read
+                    }
+                    merged.append(m)   // not added to freshGood: a partial read must not overwrite the baseline
+                } else if let prev = self.lastGood.first(where: { $0.id == dev.id }),
+                          let cap = prev.capturedAt, now.timeIntervalSince(cap) < Self.staleGraceUnreadable {
+                    // Grace measured from THIS device's own last good read, so a healthy sibling
+                    // refreshing can't keep resetting it and hide this device's error forever.
                     var s = prev; s.isStale = true
                     merged.append(s)
                 } else {
                     merged.append(dev)
-                    if dev.errorMessage == nil { freshGood.append(dev) }
                 }
             }
             self.devices = merged
             self.statusMessage = nil
 
-            // Only genuinely fresh reads refresh the grace window. Reused stale entries also carry
-            // errorMessage == nil, so counting them would keep resetting the timer and the device
-            // would never time out while it stays enumerated-but-unreadable.
+            // Merge (don't replace) fresh full reads into the cache so a device that read fully this
+            // tick updates its own entry while a sibling that is locked/failed keeps its previously
+            // cached good data — otherwise a single healthy device would evict every other device's
+            // health from the cache.
             if !freshGood.isEmpty {
-                self.lastGood = freshGood
-                self.lastGoodAt = now
+                var updated = self.lastGood
+                for g in freshGood {
+                    if let i = updated.firstIndex(where: { $0.id == g.id }) { updated[i] = g }
+                    else { updated.append(g) }
+                }
+                self.lastGood = updated
             }
+            // Prune entries whose device has been off the bus longer than the ride-out window. Runs
+            // every publish, so a genuinely departed device doesn't linger (and briefly resurrect
+            // when the bus later goes fully empty), while a one-tick enumeration blip keeps its
+            // entry — and, for a locked device, its graft baseline.
+            self.lastGood = self.lastGood.filter { self.seenWithin(Self.staleGraceGone, $0.id, now) }
         }
+    }
+
+    /// True if `id` appeared in a fresh enumeration within `window` of `now`. Main-thread only
+    /// (lastSeenAt is only touched inside publish).
+    private func seenWithin(_ window: TimeInterval, _ id: String, _ now: Date) -> Bool {
+        guard let seen = lastSeenAt[id] else { return false }
+        return now.timeIntervalSince(seen) < window
     }
 }

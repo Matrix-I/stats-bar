@@ -7,6 +7,14 @@ struct IOSDeviceRow: View {
     let device: IOSDeviceInfo
     @State private var showFullDetails = false
 
+    /// Time-only for a reading captured today; date + time once it's from an earlier day, so a
+    /// health figure that is actually days old isn't misread as a same-day reading.
+    private static func readingStamp(_ at: Date) -> String {
+        Calendar.current.isDateInToday(at)
+            ? at.formatted(date: .omitted, time: .shortened)
+            : at.formatted(date: .abbreviated, time: .shortened)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline) {
@@ -25,11 +33,28 @@ struct IOSDeviceRow: View {
                     .font(.caption2).foregroundStyle(.secondary)
             }
 
+            if device.isLocked {
+                // Detailed health needs the diagnostics relay, which iOS refuses while the device
+                // is at the passcode lock screen (the common case) — occasionally also when another
+                // app is holding the relay. Charge may still be live. Guide the user to unlock
+                // without asserting the exact cause; it refreshes on its own once readable again.
+                if device.maxCapacity != nil, let at = device.capturedAt {
+                    Text("🔒 Battery health from last reading (\(Self.readingStamp(at))) — unlock the iPhone to refresh.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                } else {
+                    Text("🔒 Unlock the iPhone to read battery health.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+
             if let err = device.errorMessage {
                 Text(err).font(.caption2).foregroundStyle(.red)
             } else if device.chargePercent == nil && device.healthPercent == nil {
-                Text("⚠ Couldn't read health data — unlock the device + Trust, then tap Refresh.")
-                    .font(.caption2).foregroundStyle(.orange)
+                // Only surface the generic warning when it isn't already explained by the lock note.
+                if !device.isLocked {
+                    Text("⚠ Couldn't read health data — unlock the device + Trust, then tap Refresh.")
+                        .font(.caption2).foregroundStyle(.orange)
+                }
             } else {
                 if let cp = device.chargePercent {
                     HStack(alignment: .firstTextBaseline) {

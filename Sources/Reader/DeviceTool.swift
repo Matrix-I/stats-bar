@@ -59,8 +59,18 @@ enum DeviceTool {
         }
 
         if group.wait(timeout: .now() + toolTimeout) == .timedOut {
-            process.terminate()
-            _ = group.wait(timeout: .now() + 1)   // let the pipe readers hit EOF and unwind
+            process.terminate()                          // SIGTERM
+            if group.wait(timeout: .now() + 1) == .timedOut {
+                // The tool ignored SIGTERM (e.g. blocked in a usbmux syscall on a locked device).
+                // Escalate to SIGKILL so the child dies, its pipe write-ends close, and the two
+                // reader work items above hit EOF and unwind — otherwise they leak, blocked on
+                // readDataToEndOfFile, once per timed-out call. Deliberately no waitUntilExit()
+                // here: it could block unbounded if the child is wedged in an uninterruptible
+                // kernel wait, re-introducing the very hang toolTimeout exists to prevent.
+                // Foundation reaps the child asynchronously once it actually dies.
+                kill(process.processIdentifier, SIGKILL)
+                _ = group.wait(timeout: .now() + 1)
+            }
             return nil
         }
         process.waitUntilExit()

@@ -21,11 +21,18 @@ struct IOSDeviceInfo: Identifiable {
     var fullyCharged = false
     var errorMessage: String?
     var isStale = false           // true = currently showing the last known data because the connection briefly dropped
-    var capturedAt: Date?         // timestamp this data was captured
+    var isLocked = false          // device is present + trusted but at the passcode lock screen: the diagnostics
+                                  // registry (mAh/health/cycle) is refused, so those values are last-known or absent
+    var lockedChargePercent: Double?  // live 0–100% charge from the lockdown battery domain, readable while locked
+    var capturedAt: Date?         // timestamp this data was captured (for a locked row: when the health figures were last read)
 
     var chargePercent: Double? {
-        guard let cur = currentCapacity, let max = maxCapacity, max > 0 else { return nil }
-        return Double(cur) / Double(max) * 100
+        if let cur = currentCapacity, let max = maxCapacity, max > 0 {
+            return Double(cur) / Double(max) * 100
+        }
+        // Locked device: the diagnostics registry (mAh) is unavailable, but the lockdown battery
+        // domain still reports a coarse 0–100% charge level.
+        return lockedChargePercent
     }
     var healthPercent: Double? {
         guard let max = maxCapacity, max > 0, let design = designCapacity, design > 0 else { return nil }
