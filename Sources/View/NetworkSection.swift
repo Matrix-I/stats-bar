@@ -56,6 +56,7 @@ struct NetworkSection: View {
                     .font(.caption).foregroundStyle(.secondary)
             } else {
                 NetRateHeader(downloadRate: info.downloadRate, uploadRate: info.uploadRate)
+                Divider()
                 overview
                 interfaceBlock
                 addressBlock
@@ -211,13 +212,19 @@ private struct NetRatePillar: View {
     var body: some View {
         let parts = fmtRateParts(rate)
         VStack(spacing: 5) {
+            // Fixed-width value (right-aligned) and unit (left-aligned) columns so the number/unit
+            // junction stays put as the rate changes — otherwise the centred content re-centres on
+            // every update and the whole block visibly jitters left/right. monospacedDigit keeps the
+            // digits themselves equal-width too.
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text(parts.value)
                     .font(.system(size: 26, weight: .regular))
                     .monospacedDigit()
+                    .frame(width: 48, alignment: .trailing)
                 Text(parts.unit)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
+                    .frame(width: 36, alignment: .leading)
             }
             HStack(spacing: 5) {
                 RoundedRectangle(cornerRadius: 3).fill(color).frame(width: 10, height: 10)

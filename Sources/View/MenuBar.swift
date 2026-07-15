@@ -101,8 +101,13 @@ func batteryMenuBarImage(level: Double, charging: Bool, percent: Int? = nil) -> 
 
 /// Compact up/down transfer rate for the menu bar: "↑ 1.2 MB/s" over "↓ 3.4 MB/s", baked into a
 /// single NSImage (right-aligned, two lines). Baking it — rather than a SwiftUI VStack — gives a
-/// compact, predictable two-line layout; the width tracks the wider of the two lines so it doesn't
-/// jump around as the rate changes.
+/// compact, predictable two-line layout.
+///
+/// The canvas width is FIXED (sized to the widest label the formatter can produce, with monospaced
+/// digits so a reference string bounds every real value). This is important: the status item's
+/// width tracks the image, and a width that changed with every rate update would resize the item —
+/// dragging an open popover sideways as the number changed. The two lines right-align inside this
+/// fixed width, so the digits grow leftward while the right edge stays put.
 ///
 /// The up arrow is red and the down arrow blue, matching the Total upload / download markers in the
 /// popover. A coloured menu-bar image can't be a template (templates render monochrome), so the
@@ -124,17 +129,17 @@ func networkMenuBarImage(up: Double, down: Double) -> NSImage {
 
     let upLine = line(arrow: "↑", arrowColor: .systemRed, rate: menuBarRate(up))
     let downLine = line(arrow: "↓", arrowColor: .systemBlue, rate: menuBarRate(down))
-    let upSize = upLine.size()
-    let downSize = downLine.size()
-    let lineH = ceil(max(upSize.height, downSize.height))
-    let w = ceil(max(upSize.width, downSize.width))
+    let lineH = ceil(max(upLine.size().height, downLine.size().height))
+    // Widest possible label ("↕ 999.9 MB/s"): "%.1f MB/s" is the longest form the formatter emits,
+    // and monospaced digits mean no real value can be wider than this reference.
+    let w = ceil(NSAttributedString(string: "↕ 999.9 MB/s", attributes: [.font: font]).size().width)
     let h = lineH * 2
 
     let img = NSImage(size: NSSize(width: max(w, 1), height: h), flipped: false) { _ in
         // Non-flipped space (origin bottom-left): upload on the top line, download on the bottom,
-        // both right-aligned so the digits stay put as the rate changes.
-        upLine.draw(at: NSPoint(x: w - ceil(upSize.width), y: lineH))
-        downLine.draw(at: NSPoint(x: w - ceil(downSize.width), y: 0))
+        // both right-aligned so the right edge stays fixed as the rate's digits change.
+        upLine.draw(at: NSPoint(x: w - ceil(upLine.size().width), y: lineH))
+        downLine.draw(at: NSPoint(x: w - ceil(downLine.size().width), y: 0))
         return true
     }
     img.isTemplate = false   // coloured — must not be a template
