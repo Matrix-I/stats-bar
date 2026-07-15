@@ -52,22 +52,38 @@ final class IOSDeviceReader: ObservableObject {
         }
     }
 
-    private func infoValue(_ path: String, udid: String, key: String) -> String? {
-        guard let data = DeviceTool.run(path, ["-u", udid, "-k", key]),
+    /// libimobiledevice tools default to the USB transport; pass `-n` to reach a device that is only
+    /// available over Wi-Fi sync. Every read prefixes its args with this so network devices work.
+    private func transportArgs(_ network: Bool) -> [String] { network ? ["-n"] : [] }
+
+    private func infoValue(_ path: String, udid: String, key: String, network: Bool) -> String? {
+        guard let data = DeviceTool.run(path, transportArgs(network) + ["-u", udid, "-k", key]),
               let str = String(data: data, encoding: .utf8) else { return nil }
         let trimmed = str.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    /// Lists UDIDs, retrying a few times since the USB connection (usbmux) can drop for a few
-    /// seconds, especially when the device is locked or another app is holding the lockdown session.
-    private func listUDIDs(_ path: String) -> [String] {
+    /// One transport's UDID set — `-l` lists USB devices, `-n` lists network (Wi-Fi sync) devices.
+    private func listOne(_ path: String, _ flag: String) -> Set<String> {
+        guard let data = DeviceTool.run(path, [flag]),
+              let s = String(data: data, encoding: .utf8) else { return [] }
+        return Set(s.split(whereSeparator: \.isNewline).map(String.init).filter { !$0.isEmpty })
+    }
+
+    /// Lists connected devices across BOTH transports, retrying a few times since the connection
+    /// (usbmux) can drop for a few seconds — especially when the device is locked or another app is
+    /// holding the lockdown session. A device that's plugged in over a charge-only cable (or a hub
+    /// that carries no data) never shows over USB, yet is still reachable over Wi-Fi when "Sync over
+    /// Wi-Fi" is on — so `-n` is enumerated too and those are read over the network transport. USB
+    /// wins when a device is reachable both ways: it's faster and always live while plugged in.
+    private func listDevices(_ path: String) -> [(udid: String, network: Bool)] {
         for attempt in 0..<5 {
-            if let data = DeviceTool.run(path, ["-l"]),
-               let s = String(data: data, encoding: .utf8) {
-                let udids = s.split(whereSeparator: \.isNewline)
-                    .map(String.init).filter { !$0.isEmpty }
-                if !udids.isEmpty { return udids }
+            let usb = listOne(path, "-l")
+            let net = listOne(path, "-n")
+            if !usb.isEmpty || !net.isEmpty {
+                var out = usb.sorted().map { (udid: $0, network: false) }
+                out += net.subtracting(usb).sorted().map { (udid: $0, network: true) }
+                return out
             }
             if attempt < 4 { Thread.sleep(forTimeInterval: 0.4) }
         }
@@ -79,9 +95,9 @@ final class IOSDeviceReader: ObservableObject {
     /// while the device sits at the passcode lock screen — but it only exposes a coarse 0–100%
     /// charge level and the charging flags, never the mAh / health / cycle-count that live behind
     /// the (unlock-gated) diagnostics relay.
-    private func readBatteryDomain(_ path: String, udid: String)
+    private func readBatteryDomain(_ path: String, udid: String, network: Bool)
         -> (pct: Double, isCharging: Bool, external: Bool, full: Bool)? {
-        guard let data = DeviceTool.run(path, ["-u", udid, "-q", "com.apple.mobile.battery", "-x"]),
+        guard let data = DeviceTool.run(path, transportArgs(network) + ["-u", udid, "-q", "com.apple.mobile.battery", "-x"]),
               let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
               let pct = intOrNil(plist["BatteryCurrentCapacity"]) else { return nil }
         return (Double(pct),
@@ -91,9 +107,9 @@ final class IOSDeviceReader: ObservableObject {
     }
 
     /// Reads ioregentry AppleSmartBattery, retrying since diagnostics also drops out temporarily.
-    private func readBatteryRegistry(_ path: String, udid: String) -> [String: Any]? {
+    private func readBatteryRegistry(_ path: String, udid: String, network: Bool) -> [String: Any]? {
         for attempt in 0..<3 {
-            if let raw = DeviceTool.run(path, ["-u", udid, "ioregentry", "AppleSmartBattery"]),
+            if let raw = DeviceTool.run(path, transportArgs(network) + ["-u", udid, "ioregentry", "AppleSmartBattery"]),
                let plist = try? PropertyListSerialization.propertyList(from: raw, options: [], format: nil) as? [String: Any],
                let reg = plist["IORegistry"] as? [String: Any] {
                 return reg
@@ -111,26 +127,27 @@ final class IOSDeviceReader: ObservableObject {
             return
         }
 
-        let udids = listUDIDs(ideviceIdPath)
-        guard !udids.isEmpty else {
+        let devicesList = listDevices(ideviceIdPath)
+        guard !devicesList.isEmpty else {
             publish(devices: [], toolsMissing: false,
-                    status: "No iPhone/iPad found over USB.\nPlug in the cable, unlock the device, tap Trust.")
+                    status: "No iPhone/iPad found over USB or Wi-Fi.\nPlug in the cable (unlock + tap Trust), or turn on “Sync over Wi-Fi” in Finder.")
             return
         }
 
         var results: [IOSDeviceInfo] = []
-        for udid in udids {
+        for (udid, network) in devicesList {
             var dev = IOSDeviceInfo(id: udid)
-            let named = infoValue(ideviceInfoPath, udid: udid, key: "DeviceName")
+            dev.isNetwork = network
+            let named = infoValue(ideviceInfoPath, udid: udid, key: "DeviceName", network: network)
             dev.name = named ?? udid
-            dev.model = infoValue(ideviceInfoPath, udid: udid, key: "ProductType") ?? ""
-            dev.iosVersion = infoValue(ideviceInfoPath, udid: udid, key: "ProductVersion") ?? ""
+            dev.model = infoValue(ideviceInfoPath, udid: udid, key: "ProductType", network: network) ?? ""
+            dev.iosVersion = infoValue(ideviceInfoPath, udid: udid, key: "ProductVersion", network: network) ?? ""
             // A successful DeviceName read means the lockdown handshake completed, i.e. the device
             // is paired/trusted. If it failed, the device isn't trusted (or just left the bus) —
             // a different problem from a merely-locked device, handled separately below.
             let trusted = named != nil
 
-            if let reg = readBatteryRegistry(diagnosticsPath, udid: udid) {
+            if let reg = readBatteryRegistry(diagnosticsPath, udid: udid, network: network) {
                 dev.serial = reg["Serial"] as? String ?? ""
                 dev.designCapacity = intOrNil(reg["DesignCapacity"])
                 dev.maxCapacity = intOrNil(reg["AppleRawMaxCapacity"]) ?? intOrNil(reg["NominalChargeCapacity"])
@@ -150,7 +167,7 @@ final class IOSDeviceReader: ObservableObject {
                 // domain for a live charge %, and let publish() keep the last-known health on
                 // screen (grafted from cache) rather than dropping to an error.
                 dev.isLocked = true
-                if let batt = readBatteryDomain(ideviceInfoPath, udid: udid) {
+                if let batt = readBatteryDomain(ideviceInfoPath, udid: udid, network: network) {
                     dev.lockedChargePercent = batt.pct
                     dev.isCharging = batt.isCharging
                     dev.externalConnected = batt.external
@@ -193,7 +210,7 @@ final class IOSDeviceReader: ObservableObject {
                 } else {
                     self.devices = []
                     self.statusMessage = status
-                        ?? "No iPhone/iPad found over USB.\nPlug in the cable, unlock the device, tap Trust."
+                        ?? "No iPhone/iPad found over USB or Wi-Fi.\nPlug in the cable (unlock + tap Trust), or turn on “Sync over Wi-Fi” in Finder."
                 }
                 return
             }

@@ -28,8 +28,13 @@ struct IOSDeviceRow: View {
                 }
             }
 
+            if device.isNetwork {
+                Text("📶 Connected over Wi-Fi (no USB data connection)")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+
             if device.isStale {
-                Text("⟳ last known data — USB connection reconnecting")
+                Text("⟳ last known data — connection reconnecting")
                     .font(.caption2).foregroundStyle(.secondary)
             }
 
@@ -135,7 +140,7 @@ struct IOSDevicesSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("📱 iPhone / iPad (USB)").font(.caption).foregroundStyle(.secondary)
+            Text("📱 iPhone / iPad (USB / Wi-Fi)").font(.caption).foregroundStyle(.secondary)
 
             if reader.toolsMissing {
                 VStack(alignment: .leading, spacing: 4) {

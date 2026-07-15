@@ -21,6 +21,10 @@ struct IOSDeviceInfo: Identifiable {
     var fullyCharged = false
     var errorMessage: String?
     var isStale = false           // true = currently showing the last known data because the connection briefly dropped
+    var isNetwork = false         // reached over Wi-Fi sync (idevice_id -n) instead of USB — the device is
+                                  // plugged into some other power source (or a charge-only cable/hub that
+                                  // carries no data), yet still readable over the network, so we surface it
+                                  // and read it with the `-n` flag rather than dropping it.
     var isLocked = false          // device is present + trusted but at the passcode lock screen: the diagnostics
                                   // registry (mAh/health/cycle) is refused, so those values are last-known or absent
     var lockedChargePercent: Double?  // live 0–100% charge from the lockdown battery domain, readable while locked
