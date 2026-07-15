@@ -20,6 +20,15 @@ private struct PanelHeightPreferenceKey: PreferenceKey {
     }
 }
 
+/// Height of the pinned footer (menu-bar settings + Refresh/Quit), measured the same way as the
+/// scroll content so it can be subtracted from the cap. Same max()-not-last reasoning as above.
+private struct FooterHeightPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 struct BatteryDetailView: View {
     @ObservedObject var reader: BatteryReader
     @ObservedObject var iosReader: IOSDeviceReader
@@ -57,18 +66,33 @@ struct BatteryDetailView: View {
     // popover invisible) — GeometryReader below then corrects it down to the content's real size.
     @State private var measuredContentHeight: CGFloat = BatteryDetailView.initialScreenHeight * BatteryDetailView.panelHeightFraction
 
+    // Measured height of the pinned footer (settings toggles + Refresh/Quit). Subtracted from the
+    // cap so the scroll area never grows over it. Starts at 0 so the first pass isn't scrolled.
+    @State private var footerHeight: CGFloat = 0
+
+    // The scroll area may fill up to the cap minus whatever the pinned footer needs. Measured, not
+    // estimated, so it tracks the footer's real height across control sizes / font settings.
+    private var maxScrollHeight: CGFloat { max(120, maxPanelHeight - footerHeight) }
+
     var body: some View {
         // Render un-scrolled by default (identical to the plain auto-sizing VStack this used to
         // be) so the very first layout pass always has a well-defined size and the popover shows.
-        // Only once we've actually measured content taller than the cap do we switch to a
-        // ScrollView with a concrete fixed height — never an ambiguous/ideal-only constraint,
-        // which is what made the window vanish before.
+        // Only once we've measured the scrollable content taller than the room left by the footer
+        // do we switch to a ScrollView with a concrete fixed height — never an ambiguous/ideal-only
+        // constraint, which is what made the window vanish before. The footer (menu-bar settings +
+        // Refresh/Quit) always sits OUTSIDE the ScrollView so it stays pinned and reachable.
         Group {
-            if measuredContentHeight > maxPanelHeight {
-                ScrollView { panelContent.background(OverlayScrollerConfigurator()) }
-                    .frame(height: maxPanelHeight)
+            if measuredContentHeight > maxScrollHeight {
+                VStack(spacing: 0) {
+                    ScrollView { scrollableContent.background(OverlayScrollerConfigurator()) }
+                        .frame(height: maxScrollHeight)
+                    footer
+                }
             } else {
-                panelContent
+                VStack(spacing: 0) {
+                    scrollableContent
+                    footer
+                }
             }
         }
         .frame(width: 300)
@@ -85,7 +109,7 @@ struct BatteryDetailView: View {
     }
 
     @ViewBuilder
-    private var panelContent: some View {
+    private var scrollableContent: some View {
         let i = reader.info
         VStack(alignment: .leading, spacing: 12) {
 
@@ -240,7 +264,22 @@ struct BatteryDetailView: View {
 
             AndroidDevicesSection(reader: androidReader)
                 .onAppear { androidReader.refresh() }
+        }
+        .padding(14)
+        .fixedSize(horizontal: false, vertical: true)
+        .background(
+            GeometryReader { proxy in
+                Color.clear.preference(key: PanelHeightPreferenceKey.self, value: proxy.size.height)
+            }
+        )
+        .onPreferenceChange(PanelHeightPreferenceKey.self) { measuredContentHeight = $0 }
+    }
 
+    // Pinned below the scroll area — never scrolls away, so the menu-bar toggles and Refresh/Quit
+    // are always reachable no matter how many devices/sections push the content past the cap.
+    @ViewBuilder
+    private var footer: some View {
+        VStack(alignment: .leading, spacing: 12) {
             Divider()
 
             VStack(alignment: .leading, spacing: 4) {
@@ -265,14 +304,15 @@ struct BatteryDetailView: View {
             }
             .controlSize(.small)
         }
-        .padding(14)
+        .padding(.horizontal, 14)
+        .padding(.bottom, 14)
         .fixedSize(horizontal: false, vertical: true)
         .background(
             GeometryReader { proxy in
-                Color.clear.preference(key: PanelHeightPreferenceKey.self, value: proxy.size.height)
+                Color.clear.preference(key: FooterHeightPreferenceKey.self, value: proxy.size.height)
             }
         )
-        .onPreferenceChange(PanelHeightPreferenceKey.self) { measuredContentHeight = $0 }
+        .onPreferenceChange(FooterHeightPreferenceKey.self) { footerHeight = $0 }
     }
 
     private func powerText(_ i: BatteryInfo) -> String {
