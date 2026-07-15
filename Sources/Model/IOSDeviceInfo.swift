@@ -26,6 +26,12 @@ struct IOSDeviceInfo: Identifiable {
     var lockedChargePercent: Double?  // live 0–100% charge from the lockdown battery domain, readable while locked
     var capturedAt: Date?         // timestamp this data was captured (for a locked row: when the health figures were last read)
 
+    /// Whether the menu-bar glyph should show the charging bolt. `isCharging` alone goes
+    /// false the moment the phone reaches 100% even though it's still on the cable and
+    /// drawing power, which left the bolt off while plugged in and full. Being externally
+    /// connected is the right signal — same fix as the Mac's `BatteryInfo.isPluggedIn`.
+    var isPluggedIn: Bool { externalConnected || isCharging }
+
     var chargePercent: Double? {
         if let cur = currentCapacity, let max = maxCapacity, max > 0 {
             return Double(cur) / Double(max) * 100

@@ -38,6 +38,12 @@ struct AndroidDeviceInfo: Identifiable {
     var isStale = false
     var capturedAt: Date?
 
+    /// Whether the menu-bar glyph should show the charging bolt. `isCharging` alone goes
+    /// false the moment the phone reaches 100% even though it's still on the cable and
+    /// drawing power, which left the bolt off while plugged in and full. Being externally
+    /// connected is the right signal — same fix as the Mac's `BatteryInfo.isPluggedIn`.
+    var isPluggedIn: Bool { externalConnected || isCharging }
+
     var healthPercent: Double? {
         guard let max = maxCapacity, max > 0, let design = designCapacity, design > 0 else { return nil }
         return Double(max) / Double(design) * 100

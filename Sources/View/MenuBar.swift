@@ -183,23 +183,23 @@ struct MenuBarLabel: View {
         if let ios = iosDevice, let iosCp = ios.chargePercent {
             // Both devices, baked into one image — no HStack for the menu bar to reverse.
             Image(nsImage: dualMenuBarImage(macPct: macPct,
-                                            macCharging: reader.info.isCharging,
+                                            macCharging: reader.info.isPluggedIn,
                                             phonePct: Int(iosCp.rounded()),
-                                            phoneCharging: ios.isCharging,
+                                            phoneCharging: ios.isPluggedIn,
                                             phoneSymbol: "iphone",
                                             showPercent: showMacPercent))
         } else if let android = androidDevice, let level = android.levelPercent {
             Image(nsImage: dualMenuBarImage(macPct: macPct,
-                                            macCharging: reader.info.isCharging,
+                                            macCharging: reader.info.isPluggedIn,
                                             phonePct: level,
-                                            phoneCharging: android.isCharging,
+                                            phoneCharging: android.isPluggedIn,
                                             phoneSymbol: "candybarphone",
                                             showPercent: showMacPercent))
         } else {
             // Number lives inside the battery, so there's just one element — no HStack
             // ordering for the menu bar to reverse.
             BatteryGlyph(level: reader.info.chargePercent / 100,
-                         charging: reader.info.isCharging,
+                         charging: reader.info.isPluggedIn,
                          percent: showMacPercent ? macPct : nil)
         }
     }

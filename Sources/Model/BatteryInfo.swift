@@ -39,6 +39,13 @@ struct BatteryInfo {
     // nil only if the VM stats read fails, which is effectively never on a real Mac.
     var memory: MemoryInfo? = nil
 
+    /// Whether the menu-bar glyph should show the charging bolt. `isCharging` alone drops
+    /// to false the instant the battery reaches 100% (or while it's held at a charge limit
+    /// by battery-health management) even though the charger is still connected and DC power
+    /// is flowing in — which left the bolt off while plugged in and full. Being on external
+    /// charger power is the right signal; macOS keeps its own menu-bar bolt lit the same way.
+    var isPluggedIn: Bool { externalConnected || isCharging }
+
     var chargePercent: Double {
         maxCapacity > 0 ? Double(currentCapacity) / Double(maxCapacity) * 100 : 0
     }
