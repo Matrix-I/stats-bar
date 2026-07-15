@@ -25,7 +25,7 @@ struct InfoRow: View {
 
     var body: some View {
         HStack {
-            Text(label).foregroundStyle(.secondary)
+            Text(label)
             Spacer()
             Text(value)
                 .fontWeight(.medium)

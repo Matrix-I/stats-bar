@@ -131,7 +131,7 @@ struct NetworkSection: View {
             InfoRow(label: "Network", value: ssid + rssi)
         } else if needsLocationForSSID {
             HStack {
-                Text("Network").foregroundStyle(.secondary)
+                Text("Network")
                 Spacer()
                 Button {
                     reader.requestLocationForSSID()
@@ -246,7 +246,7 @@ private struct NetBadgeRow: View {
     let up: Bool
     var body: some View {
         HStack {
-            Text(label).foregroundStyle(.secondary)
+            Text(label)
             Spacer()
             NetStatusBadge(up: up)
         }
@@ -254,21 +254,17 @@ private struct NetBadgeRow: View {
     }
 }
 
-/// A throughput total row: a colour-keyed square (red = up, blue = down), the label, then the total
-/// with the live rate as a dim trailing note when data is flowing.
+/// A throughput total row: a colour-keyed square (red = upload, blue = download), the label, and the
+/// cumulative session total. The live rate lives in NetRateHeader, not here.
 private struct NetTotalRow: View {
     let color: Color
     let label: String
     let value: String
-    var rate: String?
     var body: some View {
         HStack {
             RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 10, height: 10)
-            Text(label).foregroundStyle(.secondary)
+            Text(label)
             Spacer()
-            if let rate {
-                Text(rate).foregroundStyle(.secondary).font(.system(size: 10)).monospacedDigit()
-            }
             Text(value).fontWeight(.medium).monospacedDigit().lineLimit(1)
         }
         .font(.system(size: 12))
@@ -298,7 +294,7 @@ private struct NetDNSRow: View {
     let servers: [String]
     var body: some View {
         HStack(alignment: .top) {
-            Text("DNS Server").foregroundStyle(.secondary)
+            Text("DNS Server")
             Spacer()
             VStack(alignment: .trailing, spacing: 2) {
                 ForEach(servers, id: \.self) { s in
