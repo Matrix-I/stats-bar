@@ -55,6 +55,7 @@ struct NetworkSection: View {
                 Text("No active network connection.")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
+                NetRateHeader(downloadRate: info.downloadRate, uploadRate: info.uploadRate)
                 overview
                 interfaceBlock
                 addressBlock
@@ -68,12 +69,10 @@ struct NetworkSection: View {
     @ViewBuilder
     private var overview: some View {
         VStack(spacing: 6) {
-            NetTotalRow(color: .red, label: "Total upload",
-                        value: fmtBytes(info.uploadTotal),
-                        rate: info.uploadRate > 0 ? fmtRate(info.uploadRate) : nil)
-            NetTotalRow(color: .blue, label: "Total download",
-                        value: fmtBytes(info.downloadTotal),
-                        rate: info.downloadRate > 0 ? fmtRate(info.downloadRate) : nil)
+            // Live rate is shown prominently in NetRateHeader above, so these rows are just the
+            // cumulative session totals.
+            NetTotalRow(color: .red, label: "Total upload", value: fmtBytes(info.uploadTotal))
+            NetTotalRow(color: .blue, label: "Total download", value: fmtBytes(info.downloadTotal))
 
             NetBadgeRow(label: "Status", up: info.isUp)
             NetBadgeRow(label: "Internet connection", up: info.internetReachable)
@@ -189,6 +188,45 @@ struct NetworkSection: View {
 }
 
 // MARK: - Small building blocks
+
+/// The prominent live-rate header at the top of the tab: two big numbers (Download in blue, Upload
+/// in red) with their unit and a colour-keyed label, matching the reference design.
+private struct NetRateHeader: View {
+    let downloadRate: Double
+    let uploadRate: Double
+    var body: some View {
+        HStack(spacing: 0) {
+            NetRatePillar(color: .blue, label: "Download", rate: downloadRate)
+            NetRatePillar(color: .red, label: "Upload", rate: uploadRate)
+        }
+        .padding(.top, 16)
+        .padding(.bottom, 20)
+    }
+}
+
+private struct NetRatePillar: View {
+    let color: Color
+    let label: String
+    let rate: Double
+    var body: some View {
+        let parts = fmtRateParts(rate)
+        VStack(spacing: 5) {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(parts.value)
+                    .font(.system(size: 26, weight: .regular))
+                    .monospacedDigit()
+                Text(parts.unit)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 5) {
+                RoundedRectangle(cornerRadius: 3).fill(color).frame(width: 10, height: 10)
+                Text(label).font(.system(size: 12)).foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
 
 /// A green "UP" / red "DOWN" pill, matching the reference status chips.
 private struct NetStatusBadge: View {

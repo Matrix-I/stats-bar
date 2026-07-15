@@ -29,6 +29,23 @@ func fmtRate(_ bytesPerSec: Double) -> String {
     fmtBytes(UInt64(max(0, bytesPerSec))) + "/s"
 }
 
+/// Splits a bytes/sec rate into a big number and its unit ("2" + "KB/s") for the prominent
+/// Download/Upload header. Whole numbers up to KB/s (like the reference design); one decimal for
+/// small MB/s+ so a slow megabyte-range link still reads meaningfully.
+func fmtRateParts(_ bytesPerSec: Double) -> (value: String, unit: String) {
+    let units = ["B/s", "KB/s", "MB/s", "GB/s"]
+    var value = max(0, bytesPerSec)
+    var i = 0
+    while value >= 1000 && i < units.count - 1 { value /= 1000; i += 1 }
+    let valueStr: String
+    switch i {
+    case 0, 1: valueStr = String(Int(value.rounded()))                        // B/s, KB/s → whole
+    default:   valueStr = value < 10 ? String(format: "%.1f", value)          // small MB/s+ → 1 dp
+                                     : String(Int(value.rounded()))
+    }
+    return (valueStr, units[i])
+}
+
 /// ISO-3166 alpha-2 country code → flag emoji (e.g. "VN" → 🇻🇳) by mapping each letter to its
 /// regional-indicator symbol. Returns "" for anything that isn't two letters.
 func flagEmoji(_ code: String) -> String {
