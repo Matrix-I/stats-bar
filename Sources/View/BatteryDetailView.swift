@@ -40,6 +40,9 @@ struct BatteryDetailView: View {
     @AppStorage("showMacFullDetails") private var showMacFullDetails = false
     @AppStorage("showMacPowerLiveDetails") private var showMacPowerLiveDetails = false
 
+    // Read by TemperatureAlerter (same key, same default) to decide whether to warn on a hot iPhone.
+    @AppStorage("alertHotIPhone") private var alertHotIPhone = true
+
     // visibleFrame height of the screen the popover is *actually* shown on. MenuBarExtra can open
     // the popover on any display (in a multi-monitor setup it follows the active menu bar, not
     // necessarily the primary screen), so WindowVisibilityReporter feeds us the real one via
@@ -286,6 +289,7 @@ struct BatteryDetailView: View {
                 Toggle("Show % in menu bar", isOn: $showMenuBarPercent)
                 Toggle("Show iPhone in menu bar", isOn: $showIPhoneMenuBar)
                 Toggle("Show Android in menu bar", isOn: $showAndroidMenuBar)
+                Toggle("Alert when iPhone battery is hot (39°C)", isOn: $alertHotIPhone)
             }
             .font(.caption)
             .toggleStyle(.switch)

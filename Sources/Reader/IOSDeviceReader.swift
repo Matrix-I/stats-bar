@@ -15,6 +15,10 @@ final class IOSDeviceReader: ObservableObject {
     private var isBusy = false
     private var timer: Timer?
 
+    /// Warns (macOS notification) when a device's battery runs hot. Touched only on the main thread,
+    /// inside publish, so its threshold-crossing state stays single-threaded.
+    private let alerter = TemperatureAlerter()
+
     /// Cache of the most recently read devices (only touched on the main thread, inside publish) —
     /// used to keep showing data when the USB connection drops briefly instead of the device "vanishing".
     private var lastGood: [IOSDeviceInfo] = []
@@ -186,6 +190,10 @@ final class IOSDeviceReader: ObservableObject {
     private func publish(devices fresh: [IOSDeviceInfo], toolsMissing: Bool, status: String?) {
         DispatchQueue.main.async {
             self.isBusy = false
+
+            // Runs after whichever branch below finalizes self.devices, so the alerter always sees
+            // the final list (including the empty cases, which clear its per-device state).
+            defer { self.alerter.check(self.devices) }
 
             if toolsMissing {
                 self.toolsMissing = true

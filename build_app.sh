@@ -53,6 +53,14 @@ PLIST
 # Ad-hoc sign (not required for a local build, but cleaner)
 codesign --force -s - "$APP.app" 2>/dev/null || true
 
+# Force LaunchServices to re-register this exact bundle and drop any cached icon render, so the
+# freshly built AppIcon appears immediately (in Finder and in notifications posted by the app)
+# instead of a stale/generic placeholder. lsregister is the private LaunchServices support tool;
+# touch bumps mtime so IconServices re-rasterizes. Best-effort — never fail the build over it.
+LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister
+[ -x "$LSREGISTER" ] && "$LSREGISTER" -f "$PWD/$APP.app" 2>/dev/null || true
+touch "$APP.app"
+
 echo ""
 echo "✅ Done: $APP.app"
 
