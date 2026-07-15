@@ -9,8 +9,9 @@ APP=BatteryBar
 DMG="$APP.dmg"
 VOL="$APP"
 
-# 1. Build the .app bundle (compile + bundle + ad-hoc sign)
-./build_app.sh
+# 1. Build the .app bundle (compile + bundle + ad-hoc sign). --no-launch: just package it,
+#    don't relaunch the local build (that only makes sense for a dev build, not DMG packaging).
+./build_app.sh --no-launch
 
 # 2. Stage the disk-image contents: the app + a drag-to-install shortcut to /Applications
 STAGEROOT="$(mktemp -d)"
