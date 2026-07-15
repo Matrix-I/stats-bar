@@ -5,9 +5,24 @@
 import SwiftUI
 import AppKit
 
+/// Draws the charging bolt so it reads at ANY fill level. The bolt is laid down as a solid
+/// glyph, but first a slightly larger bolt-shaped halo is knocked out with `.destinationOut`
+/// so there's a clean transparent gap between the bolt and the fill behind it. Punching the
+/// bolt out with `.destinationOut` *alone* (the old approach) only looked right when the fill
+/// reached the bolt: at a low charge — e.g. an iPhone at 17% — the fill stops well short of the
+/// centred bolt, so the hole cut through the empty interior and the right of the outline and
+/// looked broken. macOS always shows a solid bolt regardless of level, so we do the same.
+private func drawChargingBolt(in bodyRect: NSRect, h: CGFloat) {
+    guard let bolt = NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: nil) else { return }
+    let bh = h * 0.92, bw = bh * (bolt.size.width / max(bolt.size.height, 1))
+    let br = NSRect(x: bodyRect.midX - bw / 2, y: h / 2 - bh / 2, width: bw, height: bh)
+    bolt.draw(in: br.insetBy(dx: -bw * 0.16, dy: -bh * 0.16), from: .zero, operation: .destinationOut, fraction: 1)
+    bolt.draw(in: br, from: .zero, operation: .sourceOver, fraction: 1)
+}
+
 /// Draws the menu-bar battery as a resolution-independent **template** NSImage:
 /// horizontal outline + terminal nub, an inner fill proportional to the real charge
-/// level, and (when charging) a bolt punched out via `.destinationOut`. A template
+/// level, and (when charging) a bolt drawn by `drawChargingBolt`. A template
 /// image is the reliable way to render a custom menu-bar glyph — the system tints it
 /// to match the menu bar (white on dark, black on light). A SwiftUI shape view with
 /// blend modes instead rendered as a solid dark blob, because `.primary` didn't adapt
@@ -51,11 +66,7 @@ func batteryMenuBarImage(level: Double, charging: Bool, percent: Int? = nil) -> 
             NSBezierPath(roundedRect: NSRect(x: bx + bodyW + 0.6, y: h / 2 - 2.4, width: 1.7, height: 4.8),
                          xRadius: 0.8, yRadius: 0.8).fill()
 
-            if charging, let bolt = NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: nil) {
-                let bh = h * 0.92, bw = bh * (bolt.size.width / max(bolt.size.height, 1))
-                let br = NSRect(x: bodyRect.midX - bw / 2, y: h / 2 - bh / 2, width: bw, height: bh)
-                bolt.draw(in: br, from: .zero, operation: .destinationOut, fraction: 1)
-            }
+            if charging { drawChargingBolt(in: bodyRect, h: h) }
             return true
         }
         img.isTemplate = true
@@ -81,11 +92,7 @@ func batteryMenuBarImage(level: Double, charging: Bool, percent: Int? = nil) -> 
         NSBezierPath(roundedRect: NSRect(x: bodyW + 0.6, y: h / 2 - 2.4, width: 1.7, height: 4.8),
                      xRadius: 0.8, yRadius: 0.8).fill()
 
-        if charging, let bolt = NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: nil) {
-            let bh = h * 0.92, bw = bh * (bolt.size.width / max(bolt.size.height, 1))
-            let br = NSRect(x: bodyRect.midX - bw / 2, y: h / 2 - bh / 2, width: bw, height: bh)
-            bolt.draw(in: br, from: .zero, operation: .destinationOut, fraction: 1)
-        }
+        if charging { drawChargingBolt(in: bodyRect, h: h) }
         return true
     }
     img.isTemplate = true
