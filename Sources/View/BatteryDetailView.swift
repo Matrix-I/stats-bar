@@ -134,14 +134,33 @@ struct BatteryDetailView: View {
                 MacMemorySection(mem: mem)
             }
 
-            // Header
-            HStack {
+            // Header — the "🔋 Battery" title is centred on the line; the device name and the
+            // show-more toggle are anchored to the trailing edge, overlaid on the same row (same
+            // centred-title / right-aligned-control layout SectionCaption uses).
+            ZStack {
                 Text("🔋 Battery").font(.headline)
-                Spacer()
-                Text(i.deviceName)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                HStack {
+                    Spacer()
+                    Text(i.deviceName)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            showMacFullDetails.toggle()
+                        }
+                    } label: {
+                        Image(systemName: "slider.horizontal.3")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(showMacFullDetails ? Color.white : Color.secondary)
+                            .padding(4)
+                            .background(
+                                Circle().fill(showMacFullDetails ? Color.accentColor : Color.secondary.opacity(0.15))
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .help(showMacFullDetails ? "Show less" : "Show more")
+                }
             }
 
             // Current charge
@@ -173,28 +192,6 @@ struct BatteryDetailView: View {
                 BarView(pct: i.healthPercent, color: healthColor(i.healthPercent))
                 Text("\(i.maxCapacity) / \(i.designCapacity) mAh (design)")
                     .font(.caption2).foregroundStyle(.secondary).monospacedDigit()
-            }
-
-            ZStack {
-                Divider()
-                HStack {
-                    Spacer()
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.15)) {
-                            showMacFullDetails.toggle()
-                        }
-                    } label: {
-                        Image(systemName: "slider.horizontal.3")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(showMacFullDetails ? Color.white : Color.secondary)
-                            .padding(4)
-                            .background(
-                                Circle().fill(showMacFullDetails ? Color.accentColor : Color.secondary.opacity(0.15))
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .help(showMacFullDetails ? "Show less" : "Show more")
-                }
             }
 
             VStack(spacing: 6) {
