@@ -45,20 +45,13 @@ struct IOSDeviceRow: View {
                 // is at the passcode lock screen (the common case) — occasionally also when another
                 // app is holding the relay. Charge may still be live. Guide the user to unlock
                 // without asserting the exact cause; it refreshes on its own once readable again.
-                if (device.maxCapacity != nil || device.reportedHealthPercent != nil), let at = device.capturedAt {
+                if device.maxCapacity != nil, let at = device.capturedAt {
                     Text("🔒 Battery health from last reading (\(Self.readingStamp(at))) — unlock the iPhone to refresh.")
                         .font(.caption2).foregroundStyle(.secondary)
                 } else {
                     Text("🔒 Unlock the iPhone to read battery health.")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
-            } else if device.limitedData {
-                // Read came from the GasGauge fallback (this iOS doesn't populate the full battery
-                // registry) — cycle count, maximum capacity and charge are real; the mAh capacities,
-                // temperature, voltage and serial simply aren't exposed, so note that rather than
-                // leaving the reader looking for rows that never appear.
-                Text("ⓘ This iOS reports only cycle count, maximum capacity & charge over USB.")
-                    .font(.caption2).foregroundStyle(.secondary)
             }
 
             if let err = device.errorMessage {

@@ -110,38 +110,24 @@ final class IOSDeviceReader: ObservableObject {
                 plist["FullyCharged"] as? Bool ?? false)
     }
 
-    /// Reads ioregentry AppleSmartBattery, retrying since diagnostics also drops out temporarily.
-    /// Returns nil when the entry has no IORegistry payload — which happens two very different ways:
-    /// the relay is refused (device locked) OR the relay answers Status=Success but doesn't populate
-    /// AppleSmartBattery at all (seen on iPhone 7 / iOS 15.8.8, where this selector is simply empty).
-    /// The GasGauge fallback below tells those apart: it succeeds only when the relay is reachable.
+    /// Reads the battery IORegistry over the diagnostics relay. The gas-gauge data lives under
+    /// different IOKit classes depending on the device/OS: modern iPhones expose it as
+    /// `AppleSmartBattery`, but iPhone 7-era hardware on iOS 15 leaves that entry empty (the relay
+    /// answers Status=Success with no IORegistry payload) and carries the *same keys* under
+    /// `AppleARMPMUCharger` instead. Try both and take whichever actually returns a registry with
+    /// battery figures, so an empty `AppleSmartBattery` isn't mistaken for a locked device. Retries
+    /// since diagnostics also drops out temporarily. Returns nil only when neither class yields data
+    /// — the genuine "relay refused" (locked) case, handled by the caller.
     private func readBatteryRegistry(_ path: String, udid: String, network: Bool) -> [String: Any]? {
         for attempt in 0..<3 {
-            if let raw = DeviceTool.run(path, transportArgs(network) + ["-u", udid, "ioregentry", "AppleSmartBattery"]),
-               let plist = try? PropertyListSerialization.propertyList(from: raw, options: [], format: nil) as? [String: Any],
-               let reg = plist["IORegistry"] as? [String: Any] {
-                return reg
-            }
-            if attempt < 2 { Thread.sleep(forTimeInterval: 0.3) }
-        }
-        return nil
-    }
-
-    /// Fallback for devices/OSes that don't populate `ioregentry AppleSmartBattery` (e.g. iPhone 7 /
-    /// iOS 15.8.8): the diagnostics relay's `GasGauge` diagnostic still answers with cycle count,
-    /// design capacity and a "Maximum Capacity" figure. Because this uses the *same* unlock-gated
-    /// diagnostics relay, a success here proves the device is unlocked and readable — so it's a real
-    /// (if coarser) reading, not a locked device. Returns nil unless the relay reports Status=Success
-    /// with at least one battery figure. FullChargeCapacity comes back as a percentage on the devices
-    /// that need this path (never mAh), so the caller interprets small values as a health %.
-    private func readBatteryGasGauge(_ path: String, udid: String, network: Bool) -> [String: Any]? {
-        for attempt in 0..<3 {
-            if let raw = DeviceTool.run(path, transportArgs(network) + ["-u", udid, "diagnostics", "GasGauge"]),
-               let plist = try? PropertyListSerialization.propertyList(from: raw, options: [], format: nil) as? [String: Any],
-               let gg = plist["GasGauge"] as? [String: Any],
-               (gg["Status"] as? String) == "Success",
-               gg["CycleCount"] != nil || gg["DesignCapacity"] != nil || gg["FullChargeCapacity"] != nil {
-                return gg
+            for cls in ["AppleSmartBattery", "AppleARMPMUCharger"] {
+                if let raw = DeviceTool.run(path, transportArgs(network) + ["-u", udid, "ioregentry", cls]),
+                   let plist = try? PropertyListSerialization.propertyList(from: raw, options: [], format: nil) as? [String: Any],
+                   let reg = plist["IORegistry"] as? [String: Any],
+                   reg["AppleRawMaxCapacity"] != nil || reg["NominalChargeCapacity"] != nil
+                       || reg["DesignCapacity"] != nil || reg["CycleCount"] != nil {
+                    return reg
+                }
             }
             if attempt < 2 { Thread.sleep(forTimeInterval: 0.3) }
         }
@@ -189,37 +175,15 @@ final class IOSDeviceReader: ObservableObject {
                 dev.externalConnected = reg["ExternalConnected"] as? Bool ?? false
                 dev.fullyCharged = reg["FullyCharged"] as? Bool ?? false
                 dev.capturedAt = Date()
-            } else if let gg = readBatteryGasGauge(diagnosticsPath, udid: udid, network: network) {
-                // AppleSmartBattery came back empty, but the GasGauge diagnostic answered — the relay
-                // is reachable, so the device is unlocked and this is a genuine (coarser) reading, not
-                // a locked device. Exposes cycle count, design capacity and a "Maximum Capacity" %,
-                // but no mAh / temperature / voltage / serial. Charge comes from the battery domain.
-                dev.limitedData = true
-                dev.cycleCount = intOrNil(gg["CycleCount"])
-                dev.designCapacity = intOrNil(gg["DesignCapacity"])
-                if let fcc = intOrNil(gg["FullChargeCapacity"]) {
-                    // On the devices that need this path FullChargeCapacity is a percentage (e.g. 100),
-                    // never mAh — but guard by magnitude so a device that ever returns real mAh (always
-                    // ≫ any health %) is treated as a capacity, not a bogus 2000%+ "health".
-                    if fcc > 0 && fcc <= 200 { dev.reportedHealthPercent = Double(fcc) }
-                    else if fcc > 200 { dev.maxCapacity = fcc }
-                }
-                if let batt = readBatteryDomain(ideviceInfoPath, udid: udid, network: network) {
-                    dev.coarseChargePercent = batt.pct
-                    dev.isCharging = batt.isCharging
-                    dev.externalConnected = batt.external
-                    dev.fullyCharged = batt.full
-                }
-                dev.capturedAt = Date()
             } else if trusted {
-                // Both diagnostics reads failed. The relay is refused while the device sits at the
-                // passcode lock screen (lockdownd returns PASSWORD_PROTECTED), so the detailed registry
-                // is unreadable. The device is still here and trusted, though — fall back to the
-                // lockdown battery domain for a live charge %, and let publish() keep the last-known
-                // health on screen (grafted from cache) rather than dropping to an error.
+                // Diagnostics relay is refused while the device sits at the passcode lock screen
+                // (lockdownd returns PASSWORD_PROTECTED), so the detailed registry is unreadable.
+                // The device is still here and trusted, though — fall back to the lockdown battery
+                // domain for a live charge %, and let publish() keep the last-known health on
+                // screen (grafted from cache) rather than dropping to an error.
                 dev.isLocked = true
                 if let batt = readBatteryDomain(ideviceInfoPath, udid: udid, network: network) {
-                    dev.coarseChargePercent = batt.pct
+                    dev.lockedChargePercent = batt.pct
                     dev.isCharging = batt.isCharging
                     dev.externalConnected = batt.external
                     dev.fullyCharged = batt.full
@@ -288,14 +252,12 @@ final class IOSDeviceReader: ObservableObject {
                     var m = dev
                     if let prev = self.lastGood.first(where: { $0.id == dev.id }) {
                         // Graft the static health figures; leave currentCapacity/amperage/temp/
-                        // voltage unset so charge stays live (coarseChargePercent) and no stale
+                        // voltage unset so charge stays live (lockedChargePercent) and no stale
                         // dynamic values are shown.
                         m.maxCapacity = prev.maxCapacity
                         m.designCapacity = prev.designCapacity
-                        m.reportedHealthPercent = prev.reportedHealthPercent  // health from the GasGauge path
                         m.cycleCount = prev.cycleCount
                         m.serial = prev.serial
-                        m.limitedData = prev.limitedData
                         m.capturedAt = prev.capturedAt   // when those health figures were actually read
                     }
                     merged.append(m)   // not added to freshGood: a partial read must not overwrite the baseline
