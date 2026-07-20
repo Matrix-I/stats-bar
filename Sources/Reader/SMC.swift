@@ -35,6 +35,7 @@ final class SMC {
     }
 
     private static let readBytes: UInt8 = 5     // SMC_CMD_READ_BYTES
+    private static let readIndex: UInt8 = 8     // SMC_CMD_READ_INDEX  (key name at an index)
     private static let readKeyInfo: UInt8 = 9   // SMC_CMD_READ_KEYINFO
     private static let kSMCHandleYPCEvent: UInt32 = 2
 
@@ -51,6 +52,12 @@ final class SMC {
         var r: UInt32 = 0
         for c in s.utf8 { r = (r << 8) | UInt32(c) }
         return r
+    }
+
+    /// The reverse of fourCC — a 32-bit key back to its four ASCII characters (for key enumeration).
+    private func keyString(_ v: UInt32) -> String {
+        let b = [UInt8((v >> 24) & 0xff), UInt8((v >> 16) & 0xff), UInt8((v >> 8) & 0xff), UInt8(v & 0xff)]
+        return String(bytes: b, encoding: .ascii) ?? ""
     }
 
     private func call(_ input: inout Param, _ output: inout Param) -> Bool {
@@ -79,6 +86,36 @@ final class SMC {
                 | (UInt32(readOut.bytes.2) << 16)
                 | (UInt32(readOut.bytes.3) << 24)
         return Double(Float(bitPattern: raw))
+    }
+
+    /// Enumerates every SMC key by index (`#KEY` gives the count, then `SMC_CMD_READ_INDEX` maps an
+    /// index → key name). Used once at startup to discover which CPU-die temperature sensors this
+    /// particular chip exposes (they're named per-chip), so the per-second read only touches keys
+    /// that actually exist. Returns [] when SMC is unavailable.
+    func allKeyNames() -> [String] {
+        guard isAvailable else { return [] }
+
+        // `#KEY` is a ui32 holding the total key count.
+        var countIn = Param(); countIn.key = fourCC("#KEY"); countIn.data8 = Self.readKeyInfo
+        var countInfo = Param()
+        guard call(&countIn, &countInfo), countInfo.result == 0 else { return [] }
+        var countRead = Param(); countRead.key = fourCC("#KEY"); countRead.keyInfo = countInfo.keyInfo
+        countRead.data8 = Self.readBytes
+        var countOut = Param()
+        guard call(&countRead, &countOut), countOut.result == 0 else { return [] }
+        let count = Int((UInt32(countOut.bytes.0) << 24) | (UInt32(countOut.bytes.1) << 16)
+                        | (UInt32(countOut.bytes.2) << 8) | UInt32(countOut.bytes.3))
+        guard count > 0, count < 100_000 else { return [] }
+
+        var names: [String] = []
+        names.reserveCapacity(count)
+        for idx in 0..<count {
+            var input = Param(); input.data8 = Self.readIndex; input.data32 = UInt32(idx)
+            var output = Param()
+            guard call(&input, &output), output.result == 0, output.key != 0 else { continue }
+            names.append(keyString(output.key))
+        }
+        return names
     }
 
     /// Reads the actual RPM of every fan the SMC exposes. Fan keys are contiguous (F0Ac, F1Ac, …),

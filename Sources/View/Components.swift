@@ -52,6 +52,50 @@ struct SectionCaption<Trailing: View>: View {
     }
 }
 
+/// A circular gauge: a faint full-circle track with one or more coloured arcs starting at 12
+/// o'clock and running clockwise, plus arbitrary centre content. The CPU panel uses it for the
+/// temperature ring (one arc) and the usage ring (a red System arc followed by a blue User arc,
+/// tying the ring to the coloured DETAIL rows below). Segment values are fractions of the full
+/// circle (0…1) and are laid down cumulatively.
+struct RingGauge<Center: View>: View {
+    struct Segment { let value: Double; let color: Color }
+
+    let segments: [Segment]
+    let lineWidth: CGFloat
+    private let center: Center
+
+    init(segments: [Segment], lineWidth: CGFloat = 8, @ViewBuilder center: () -> Center) {
+        self.segments = segments
+        self.lineWidth = lineWidth
+        self.center = center()
+    }
+
+    var body: some View {
+        ZStack {
+            Circle().stroke(Color.primary.opacity(0.12), lineWidth: lineWidth)
+
+            // Cumulative start offset per segment; the last arc gets a round cap so the leading
+            // edge reads as a clean tip (interior joins stay butt so stacked arcs meet flush).
+            let clamped = segments.map { max(0, $0.value) }
+            let starts = clamped.reduce(into: [0.0]) { acc, v in acc.append((acc.last ?? 0) + v) }
+            ForEach(Array(segments.enumerated()), id: \.offset) { idx, seg in
+                let start = min(1, starts[idx])
+                let end = min(1, starts[idx] + max(0, seg.value))
+                if end > start {
+                    Circle()
+                        .trim(from: start, to: end)
+                        .stroke(seg.color,
+                                style: StrokeStyle(lineWidth: lineWidth,
+                                                   lineCap: idx == segments.count - 1 ? .round : .butt))
+                        .rotationEffect(.degrees(-90))
+                }
+            }
+
+            center
+        }
+    }
+}
+
 struct InfoRow: View {
     let label: String
     let value: String

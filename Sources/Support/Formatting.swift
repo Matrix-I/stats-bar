@@ -8,6 +8,17 @@ func healthColor(_ p: Double) -> Color {
 
 func fmtMinutes(_ m: Int) -> String { "\(m / 60)h \(String(format: "%02d", m % 60))m" }
 
+/// Seconds-since-boot → a coarse human uptime like macOS Activity Monitor's ("3 days, 17 hours").
+/// Days+hours once it's been up a day; hours+minutes below that; minutes for a fresh boot.
+func fmtUptime(_ seconds: Double) -> String {
+    let s = Int(max(0, seconds))
+    let days = s / 86400, hours = (s % 86400) / 3600, mins = (s % 3600) / 60
+    func plural(_ n: Int, _ unit: String) -> String { "\(n) \(unit)\(n == 1 ? "" : "s")" }
+    if days > 0 { return "\(plural(days, "day")), \(plural(hours, "hour"))" }
+    if hours > 0 { return "\(plural(hours, "hour")), \(plural(mins, "minute"))" }
+    return plural(mins, "minute")
+}
+
 /// Bytes → "x.xx GB" using binary GiB (÷1024³), matching how macOS labels RAM (a 16 GiB Mac reads "16.00 GB").
 func fmtGB(_ bytes: UInt64) -> String {
     String(format: "%.2f GB", Double(bytes) / 1_073_741_824)
