@@ -1,8 +1,8 @@
 // AndroidDeviceInfo.swift — Android-over-USB battery model. Populated by AndroidDeviceReader
 // (adb). Android exposes far less over USB than libimobiledevice does for iOS: `dumpsys battery`
-// has no cycle count or design/full-charge capacity on stock Android, so those fields simply
-// don't exist here — the UI only shows what's actually available (charge %, voltage, temperature,
-// health).
+// covers only the live basics (charge %, voltage, temperature, health), while design/full-charge
+// capacity come from `dumpsys batterystats` and cycle count is a best-effort read (dumpsys keys +
+// sysfs fallback). Any field a given device/OEM doesn't expose stays nil and its row stays hidden.
 
 import Foundation
 
@@ -12,6 +12,11 @@ struct AndroidDeviceInfo: Identifiable {
     var manufacturer = ""
     var androidVersion = ""
     var levelPercent: Int?
+    // Remaining charge in mAh, from `dumpsys battery`'s "Charge counter" (BATTERY_PROPERTY_CHARGE_COUNTER,
+    // reported in µAh). Paired with maxCapacity for the "x / y mAh" subline under the charge bar. It's the
+    // raw fuel-gauge reading, so — like the Mac card's mAh subline — it may not line up exactly with the
+    // calibrated level %.
+    var currentCapacity: Int?
     var voltageV: Double?
     var temperatureC: Double?
     var technology = ""
@@ -28,10 +33,11 @@ struct AndroidDeviceInfo: Identifiable {
     // debug dump, and "Charge counter" barely changes between 1s polls) — so unlike iOS/Mac's
     // "Charging with" (live V×I), this is the charger/port's negotiated ceiling, not a live reading.
     var maxChargingWatts: Double?
-    // Confirmed unavailable on Android 9–13 (checked getprop, dumpsys battery/batterystats, and
-    // sysfs — nothing exposes it). Android only added a public cycle-count property in Android 14,
-    // and only if the OEM's health HAL reports it, so this is a best-effort, unverified parse of a
-    // hypothetical "Charge cycles" line — harmless if the key doesn't exist (stays nil, row stays hidden).
+    // Best-effort. Android exposes battery cycle count inconsistently: some Android 14+ OEM builds
+    // print it in `dumpsys battery` (under varying key spellings), and some kernels expose the gas
+    // gauge's `cycle_count` in sysfs — but many devices (e.g. Xiaomi/HyperOS, where it sits behind a
+    // non-dumpable health HAL) expose nothing without root. AndroidDeviceReader tries the dumpsys keys
+    // then the sysfs fallback; when neither yields a value this stays nil and the row stays hidden.
     var cycleCount: Int?
     var serial = ""
     var errorMessage: String?

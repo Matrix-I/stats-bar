@@ -39,7 +39,7 @@ final class AndroidDeviceReader: ObservableObject {
     /// history and take a while, so it's only fetched once per connected serial and cached — not
     /// worth re-running every second for numbers that barely change. Only touched from doRefresh(),
     /// which refresh()'s isBusy guard ensures never runs concurrently with itself.
-    private var capacityCache: [String: (max: Int?, design: Int?)] = [:]
+    private var capacityCache: [String: (max: Int?, design: Int?, cycle: Int?)] = [:]
     private var capacityLastAttempt: [String: Date] = [:]
     private static let capacityRetryInterval: TimeInterval = 30
 
@@ -123,6 +123,32 @@ final class AndroidDeviceReader: ObservableObject {
         return (maxCap, designCap)
     }
 
+    /// Battery cycle count is exposed inconsistently on Android. Some OEM `dumpsys battery` builds
+    /// (Android 14+) print it under one of several key spellings ("Charge cycles", "Cycle count",
+    /// "Battery cycle count"), so scan for any key mentioning "cycle" with a positive integer value.
+    /// Free — it reuses the already-parsed dumpsys dict, so it runs every refresh.
+    private func cycleCountFromDumpsys(_ bat: [String: String]) -> Int? {
+        for (key, value) in bat where key.lowercased().contains("cycle") {
+            if let n = Int(value.trimmingCharacters(in: .whitespaces)), n > 0 { return n }
+        }
+        return nil
+    }
+
+    /// Fallback when `dumpsys battery` carries no cycle count: read the kernel gas gauge's
+    /// `cycle_count` from sysfs. World-readable on some devices (e.g. Pixel), but root-only or absent
+    /// on others (Xiaomi/MediaTek, where it lives behind a non-dumpable health HAL) — returns nil when
+    /// unreadable, so the row simply stays hidden there. Cached by the caller (it barely changes), so
+    /// this one `adb shell cat` runs once per connection rather than every second.
+    private func readSysfsCycleCount(_ path: String, serial: String) -> Int? {
+        let probe = "for f in /sys/class/power_supply/battery/cycle_count " +
+                    "/sys/class/power_supply/bms/cycle_count; do " +
+                    "v=$(cat \"$f\" 2>/dev/null); [ -n \"$v\" ] && { echo \"$v\"; break; }; done"
+        guard let data = DeviceTool.run(path, ["-s", serial, "shell", probe]),
+              let s = String(data: data, encoding: .utf8),
+              let n = Int(s.trimmingCharacters(in: .whitespacesAndNewlines)), n > 0 else { return nil }
+        return n
+    }
+
     private func doRefresh() {
         guard let adbPath = DeviceTool.path("adb") else {
             publish(devices: [], toolsMissing: true, status: nil)
@@ -162,6 +188,9 @@ final class AndroidDeviceReader: ObservableObject {
             let level = Int(bat["level"] ?? "")
             let scale = Int(bat["scale"] ?? "") ?? 100
             if let level, scale > 0 { dev.levelPercent = level * 100 / scale }
+            if let counterUah = Int(bat["Charge counter"] ?? ""), counterUah > 0 {
+                dev.currentCapacity = counterUah / 1000   // µAh → mAh
+            }
             if let v = Int(bat["voltage"] ?? "") { dev.voltageV = Double(v) / 1000.0 }
             if let t = Int(bat["temperature"] ?? "") { dev.temperatureC = Double(t) / 10.0 }
             dev.technology = bat["technology"] ?? ""
@@ -174,7 +203,7 @@ final class AndroidDeviceReader: ObservableObject {
                mc > 0, mv > 0 {
                 dev.maxChargingWatts = (Double(mc) / 1_000_000.0) * (Double(mv) / 1_000_000.0)
             }
-            dev.cycleCount = Int(bat["Charge cycles"] ?? "")   // Android 14+ only, best-effort (see field doc)
+            dev.cycleCount = cycleCountFromDumpsys(bat)   // free per-refresh; sysfs fallback below (see field doc)
             dev.externalConnected = ["AC powered", "USB powered", "Wireless powered"]
                 .contains { bat[$0] == "true" }
             dev.capturedAt = Date()
@@ -182,15 +211,19 @@ final class AndroidDeviceReader: ObservableObject {
             if let cached = capacityCache[entry.serial] {
                 dev.maxCapacity = cached.max
                 dev.designCapacity = cached.design
+                if dev.cycleCount == nil { dev.cycleCount = cached.cycle }
             } else {
                 let lastAttempt = capacityLastAttempt[entry.serial]
                 if lastAttempt == nil || Date().timeIntervalSince(lastAttempt!) > Self.capacityRetryInterval {
                     capacityLastAttempt[entry.serial] = Date()
                     let cap = readCapacity(adbPath, serial: entry.serial)
-                    if cap.max != nil || cap.design != nil {
-                        capacityCache[entry.serial] = cap
+                    // Only worth an extra sysfs cat when dumpsys didn't already report cycles.
+                    let cyc = dev.cycleCount ?? readSysfsCycleCount(adbPath, serial: entry.serial)
+                    if cap.max != nil || cap.design != nil || cyc != nil {
+                        capacityCache[entry.serial] = (cap.max, cap.design, cyc)
                         dev.maxCapacity = cap.max
                         dev.designCapacity = cap.design
+                        if dev.cycleCount == nil { dev.cycleCount = cyc }
                     }
                 }
             }
