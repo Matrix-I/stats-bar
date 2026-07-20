@@ -32,7 +32,7 @@ struct AndroidDeviceRow: View {
             } else {
                 if let level = device.levelPercent {
                     HStack(alignment: .firstTextBaseline) {
-                        Text("Charge").font(.caption2).foregroundStyle(.secondary)
+                        Text("Current charge").font(.caption2).foregroundStyle(.secondary)
                         Spacer()
                         Text("\(level)%").font(.caption).fontWeight(.medium).monospacedDigit()
                     }

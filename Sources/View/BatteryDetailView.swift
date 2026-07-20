@@ -374,57 +374,72 @@ struct BatteryDetailView: View {
                                 .font(.caption2).foregroundStyle(.orange)
                         }
                     } else {
-                        if let cp = device.chargePercent {
-                            HStack(alignment: .firstTextBaseline) {
-                                Text("Charge").font(.caption2).foregroundStyle(.secondary)
-                                Spacer()
-                                Text(String(format: "%.1f%%", cp)).font(.caption).fontWeight(.medium).monospacedDigit()
+                        // Same block layout, fonts, mAh subline, and 12 pt group spacing as the Mac
+                        // battery card above, so the two cards read identically.
+                        VStack(alignment: .leading, spacing: 12) {
+                            if let cp = device.chargePercent {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack(alignment: .firstTextBaseline) {
+                                        Text("Current charge").font(.caption).foregroundStyle(.secondary)
+                                        Spacer()
+                                        Text(String(format: "%.1f%%", cp))
+                                            .font(.system(size: 16, weight: .semibold)).monospacedDigit()
+                                    }
+                                    BarView(pct: cp, color: .blue)
+                                    if let cur = device.currentCapacity, let max = device.maxCapacity {
+                                        Text("\(cur) / \(max) mAh")
+                                            .font(.caption2).foregroundStyle(.secondary).monospacedDigit()
+                                    }
+                                }
                             }
-                            BarView(pct: cp, color: .blue)
+                            if let mc = device.maximumCapacityPercent {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack(alignment: .firstTextBaseline) {
+                                        Text("Maximum Capacity").font(.caption).foregroundStyle(.secondary)
+                                        Spacer()
+                                        Text(String(format: "%.0f%%", mc))
+                                            .font(.system(size: 16, weight: .semibold)).monospacedDigit()
+                                            .foregroundStyle(healthColor(mc))
+                                    }
+                                    BarView(pct: mc, color: healthColor(mc))
+                                    if device.nominalChargeCapacity != nil, let raw = device.rawHealthPercent {
+                                        Text(String(format: "raw %.1f%% (vs design)", raw))
+                                            .font(.caption2).foregroundStyle(.secondary).monospacedDigit()
+                                    }
+                                }
+                            }
+                            VStack(spacing: 6) {
+                                if let max = device.maxCapacity {
+                                    InfoRow(label: "Full charge capacity", value: "\(max) mAh")
+                                }
+                                if let design = device.designCapacity {
+                                    InfoRow(label: "Design capacity", value: "\(design) mAh")
+                                }
+                                if let cc = device.cycleCount {
+                                    InfoRow(label: "Cycle count", value: "\(cc)")
+                                }
+                                if showIPhoneFullDetails {
+                                    if let t = device.temperatureC {
+                                        InfoRow(label: "Temperature", value: String(format: "%.1f °C", t))
+                                    }
+                                    if let v = device.voltageV {
+                                        InfoRow(label: "Voltage", value: String(format: "%.2f V", v))
+                                    }
+                                    if device.isCharging, let w = device.watts, w > 0.05 {
+                                        InfoRow(label: "Charging with", value: String(format: "%.1f W", w))
+                                    }
+                                    if device.externalConnected {
+                                        InfoRow(label: "Status",
+                                                value: device.isCharging ? "Charging"
+                                                    : (device.fullyCharged ? "Fully charged" : "Plugged in, not charging"))
+                                    }
+                                    if !device.serial.isEmpty {
+                                        InfoRow(label: "Serial", value: device.serial)
+                                    }
+                                }
+                            }
                         }
-                        if let mc = device.maximumCapacityPercent {
-                            HStack(alignment: .firstTextBaseline) {
-                                Text("Maximum Capacity").font(.caption2).foregroundStyle(.secondary)
-                                Spacer()
-                                Text(String(format: "%.0f%%", mc))
-                                    .font(.caption).fontWeight(.medium).monospacedDigit()
-                                    .foregroundStyle(healthColor(mc))
-                            }
-                            BarView(pct: mc, color: healthColor(mc))
-                            if device.nominalChargeCapacity != nil, let raw = device.rawHealthPercent {
-                                Text(String(format: "raw %.1f%% (vs design)", raw))
-                                    .font(.caption2).foregroundStyle(.secondary).monospacedDigit()
-                            }
-                        }
-                        if let max = device.maxCapacity {
-                            InfoRow(label: "Full charge capacity", value: "\(max) mAh")
-                        }
-                        if let design = device.designCapacity {
-                            InfoRow(label: "Design capacity", value: "\(design) mAh")
-                        }
-                        if let cc = device.cycleCount {
-                            InfoRow(label: "Cycle count", value: "\(cc)")
-                        }
-
-                        if showIPhoneFullDetails {
-                            if let t = device.temperatureC {
-                                InfoRow(label: "Temperature", value: String(format: "%.1f °C", t))
-                            }
-                            if let v = device.voltageV {
-                                InfoRow(label: "Voltage", value: String(format: "%.2f V", v))
-                            }
-                            if device.isCharging, let w = device.watts, w > 0.05 {
-                                InfoRow(label: "Charging with", value: String(format: "%.1f W", w))
-                            }
-                            if device.externalConnected {
-                                InfoRow(label: "Status",
-                                        value: device.isCharging ? "Charging"
-                                            : (device.fullyCharged ? "Fully charged" : "Plugged in, not charging"))
-                            }
-                            if !device.serial.isEmpty {
-                                InfoRow(label: "Serial", value: device.serial)
-                            }
-                        }
+                        .padding(.top, 8)
                     }
                 }
             } else {
