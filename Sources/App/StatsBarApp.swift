@@ -1,10 +1,10 @@
-// BatteryBarApp.swift — app entry point for BatteryBar, a menu bar battery health app
+// StatsBarApp.swift — app entry point for StatsBar, a menu bar battery health app
 // (coconutBattery-style).
 //
 // Requires : macOS 13 Ventura or later + Xcode Command Line Tools
 //            (xcode-select --install)
 //
-// Build/run     :  ./build_app.sh        (compiles the whole Sources/ tree into BatteryBar.app)
+// Build/run     :  ./build_app.sh        (compiles the whole Sources/ tree into StatsBar.app)
 // Package .dmg  :  ./build_dmg.sh
 //
 // Data is read directly from the IOKit registry "AppleSmartBattery" (see BatteryReader) — the
@@ -155,7 +155,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 @main
-struct BatteryBarApp: App {
+struct StatsBarApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {

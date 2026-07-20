@@ -1,5 +1,5 @@
-BatteryBar.app/
-BatteryBar
+StatsBar.app/
+StatsBar
 *.dmg
 !releases/*.dmg
 __pycache__/

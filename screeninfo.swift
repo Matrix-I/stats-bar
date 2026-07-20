@@ -1,4 +1,4 @@
-// screeninfo.swift — in ra thông tin màn hình đúng như BatteryBar tính toán.
+// screeninfo.swift — in ra thông tin màn hình đúng như StatsBar tính toán.
 // Chạy trong Terminal CỦA BẠN (phiên GUI), KHÔNG chạy qua automation:
 //     swiftc screeninfo.swift -o /tmp/screeninfo && /tmp/screeninfo
 import AppKit

@@ -1,11 +1,11 @@
 #!/bin/bash
-# build_dmg.sh — builds BatteryBar.app and packages it into a distributable BatteryBar.dmg
+# build_dmg.sh — builds StatsBar.app and packages it into a distributable StatsBar.dmg
 # Requires: Xcode Command Line Tools (xcode-select --install)
 
 set -euo pipefail
 cd "$(dirname "$0")"
 
-APP=BatteryBar
+APP=StatsBar
 DMG="$APP.dmg"
 VOL="$APP"
 

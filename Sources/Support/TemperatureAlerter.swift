@@ -3,8 +3,8 @@
 // stop an iOS device charging — iOS owns that decision and already throttles/pauses charging when
 // hot — so a heads-up to unplug is the most this app can do.
 //
-// Both alert paths show BatteryBar's OWN icon (AppIcon.icns):
-//  • Authorized  → a real macOS notification posted by BatteryBar via UNUserNotificationCenter.
+// Both alert paths show StatsBar's OWN icon (AppIcon.icns):
+//  • Authorized  → a real macOS notification posted by StatsBar via UNUserNotificationCenter.
 //    macOS draws the posting app's bundle icon (AppIcon) in the notification's left slot for free.
 //    This is the nicer path (Notification Center history, Focus/DND, system sound) but only works
 //    once the user has allowed notifications (macOS prompts on first launch of an installed copy).
@@ -14,7 +14,7 @@
 //    rebuilds — the warning always shows, always with the app's own icon.
 //
 // (The earlier osascript fallback was dropped: `display notification` is attributed to Script
-// Editor and can never carry BatteryBar's icon, which is exactly what this file needs to avoid.)
+// Editor and can never carry StatsBar's icon, which is exactly what this file needs to avoid.)
 
 import Foundation
 import UserNotifications
@@ -89,7 +89,7 @@ final class TemperatureAlerter: NSObject, UNUserNotificationCenterDelegate {
             return
         }
 
-        // Post as BatteryBar (its icon) only when notifications are allowed; otherwise the OS
+        // Post as StatsBar (its icon) only when notifications are allowed; otherwise the OS
         // silently drops the request, so draw the HUD instead — never osascript, which would show
         // Script Editor's icon. getNotificationSettings' completion runs off the main thread, so
         // hop back to main before any AppKit/window work.
@@ -108,7 +108,7 @@ final class TemperatureAlerter: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
-    /// Draws BatteryBar's own borderless HUD in the top-right corner, rendering AppIcon.icns loaded
+    /// Draws StatsBar's own borderless HUD in the top-right corner, rendering AppIcon.icns loaded
     /// straight from the bundle — so the warning always shows AND always carries the app's own icon,
     /// with no authorization required. Must be called on the main thread.
     private func deliverViaHUD(title: String, body: String) {
@@ -155,7 +155,7 @@ final class TemperatureAlerter: NSObject, UNUserNotificationCenterDelegate {
         hudDismiss = t
     }
 
-    // Show the banner even when BatteryBar is the active app (without this, a foreground app's
+    // Show the banner even when StatsBar is the active app (without this, a foreground app's
     // notifications are suppressed by default).
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 willPresent notification: UNNotification,
@@ -164,7 +164,7 @@ final class TemperatureAlerter: NSObject, UNUserNotificationCenterDelegate {
     }
 }
 
-/// The HUD's contents: BatteryBar's icon next to the alert text, on a translucent rounded card.
+/// The HUD's contents: StatsBar's icon next to the alert text, on a translucent rounded card.
 private struct HUDCard: View {
     let icon: NSImage
     let title: String

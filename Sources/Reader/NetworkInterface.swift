@@ -17,7 +17,7 @@ enum NetworkInterface {
     /// The BSD name of the interface carrying the default IPv4 route — i.e. the one actually used to
     /// reach the internet. Falls back to the IPv6 primary interface on an IPv6-only link.
     static func primaryInterface() -> String? {
-        guard let store = SCDynamicStoreCreate(nil, "BatteryBar.net" as CFString, nil, nil) else { return nil }
+        guard let store = SCDynamicStoreCreate(nil, "StatsBar.net" as CFString, nil, nil) else { return nil }
         for key in ["State:/Network/Global/IPv4", "State:/Network/Global/IPv6"] {
             if let global = SCDynamicStoreCopyValue(store, key as CFString) as? [String: Any],
                let primary = global["PrimaryInterface"] as? String, !primary.isEmpty {
@@ -30,7 +30,7 @@ enum NetworkInterface {
     /// Resolver addresses from the live network state (the same list `scutil --dns` reports first),
     /// which reflects DHCP/VPN overrides rather than the static contents of /etc/resolv.conf.
     static func dnsServers() -> [String] {
-        guard let store = SCDynamicStoreCreate(nil, "BatteryBar.dns" as CFString, nil, nil),
+        guard let store = SCDynamicStoreCreate(nil, "StatsBar.dns" as CFString, nil, nil),
               let dns = SCDynamicStoreCopyValue(store, "State:/Network/Global/DNS" as CFString) as? [String: Any],
               let servers = dns["ServerAddresses"] as? [String] else { return [] }
         return servers
@@ -40,7 +40,7 @@ enum NetworkInterface {
     /// Settings, by matching the BSD name against the configured network services. Reading the
     /// preferences is unprivileged.
     static func serviceName(forBSD bsd: String) -> String? {
-        guard let prefs = SCPreferencesCreate(nil, "BatteryBar.svc" as CFString, nil),
+        guard let prefs = SCPreferencesCreate(nil, "StatsBar.svc" as CFString, nil),
               let services = SCNetworkServiceCopyAll(prefs) as? [SCNetworkService] else { return nil }
         for svc in services {
             if let iface = SCNetworkServiceGetInterface(svc),

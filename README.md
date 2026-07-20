@@ -1,7 +1,7 @@
-# cocobat + BatteryBar — a homemade coconutBattery
+# cocobat + StatsBar — a homemade coconutBattery
 
 ```bash
-cd ~/Applications && xattr -dr com.apple.quarantine BatteryBar.app
+cd ~/Applications && xattr -dr com.apple.quarantine StatsBar.app
 ```
 
 Reads battery health from the IOKit registry `AppleSmartBattery` — the same data source coconutBattery uses. No root required.
@@ -35,17 +35,17 @@ brew install libimobiledevice
 
 ```bash
 chmod +x build_app.sh
-./build_app.sh            # builds BatteryBar.app
-open BatteryBar.app
+./build_app.sh            # builds StatsBar.app
+open StatsBar.app
 ```
 
 Or run it quickly without bundling:
 
 ```bash
-swiftc -O -parse-as-library $(find Sources -name '*.swift') -o BatteryBar && ./BatteryBar
+swiftc -O -parse-as-library $(find Sources -name '*.swift') -o StatsBar && ./StatsBar
 ```
 
-Launch at login: **System Settings → General → Login Items** → add `BatteryBar.app`.
+Launch at login: **System Settings → General → Login Items** → add `StatsBar.app`.
 
 The app now also auto-detects an iPhone/iPad plugged in over USB (the "📱 iPhone / iPad (USB)" section in the menu), using the same `libimobiledevice` mechanism as the CLI:
 
@@ -69,4 +69,4 @@ If `libimobiledevice` isn't installed, this section shows install instructions i
 - Battery manufacture date is only available on Intel Macs (Apple Silicon doesn't expose this key)
 - Newer iOS versions may block some health keys over diagnostics — the script will report if they're missing
 - Want to add Plus features (SQLite history, below-threshold notifications)? The foundation is already there, just wire it up
-# battery-bar
+# stats-bar

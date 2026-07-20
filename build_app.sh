@@ -1,11 +1,11 @@
 #!/bin/bash
-# build_app.sh — compiles the Sources/ tree and packages it into BatteryBar.app
+# build_app.sh — compiles the Sources/ tree and packages it into StatsBar.app
 # Requires: Xcode Command Line Tools (xcode-select --install)
 
 set -euo pipefail
 cd "$(dirname "$0")"
 
-APP=BatteryBar
+APP=StatsBar
 
 # By default, relaunch the app once it's built so "build finished" actually means "the new
 # version is running". Pass --no-launch to only produce the bundle (used by build_dmg.sh).
@@ -38,9 +38,9 @@ cat > "$APP.app/Contents/Info.plist" <<'PLIST'
  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleExecutable</key>       <string>BatteryBar</string>
-    <key>CFBundleIdentifier</key>       <string>local.batterybar</string>
-    <key>CFBundleName</key>             <string>BatteryBar</string>
+    <key>CFBundleExecutable</key>       <string>StatsBar</string>
+    <key>CFBundleIdentifier</key>       <string>local.statsbar</string>
+    <key>CFBundleName</key>             <string>StatsBar</string>
     <key>CFBundleIconFile</key>         <string>AppIcon</string>
     <key>CFBundlePackageType</key>      <string>APPL</string>
     <key>CFBundleShortVersionString</key><string>1.0</string>
@@ -50,9 +50,9 @@ cat > "$APP.app/Contents/Info.plist" <<'PLIST'
          holding Location Services authorization. Both keys are provided so the prompt shows on old
          and new systems; nothing else in the app uses location. -->
     <key>NSLocationUsageDescription</key>
-    <string>BatteryBar shows the name of the Wi-Fi network you're connected to.</string>
+    <string>StatsBar shows the name of the Wi-Fi network you're connected to.</string>
     <key>NSLocationWhenInUseUsageDescription</key>
-    <string>BatteryBar shows the name of the Wi-Fi network you're connected to.</string>
+    <string>StatsBar shows the name of the Wi-Fi network you're connected to.</string>
 </dict>
 </plist>
 PLIST
@@ -65,12 +65,12 @@ PLIST
 # new after each rebuild/version bump and re-prompts for permission. Signing with a *stable* identity
 # keeps the requirement constant (identifier + certificate), so permissions persist across upgrades.
 #
-# Set BATTERYBAR_SIGN_IDENTITY to a code-signing certificate name to use it; a free self-signed one
+# Set STATSBAR_SIGN_IDENTITY to a code-signing certificate name to use it; a free self-signed one
 # works fine for local use. To create one: Keychain Access ▸ Certificate Assistant ▸ Create a
-# Certificate… → Name "BatteryBar Local", Identity Type "Self Signed Root", Certificate Type
-# "Code Signing". Then either `export BATTERYBAR_SIGN_IDENTITY="BatteryBar Local"` or just name it
+# Certificate… → Name "StatsBar Local", Identity Type "Self Signed Root", Certificate Type
+# "Code Signing". Then either `export STATSBAR_SIGN_IDENTITY="StatsBar Local"` or just name it
 # that (the default below). Without a matching identity we fall back to ad-hoc (re-prompts remain).
-SIGN_IDENTITY="${BATTERYBAR_SIGN_IDENTITY:-BatteryBar Local}"
+SIGN_IDENTITY="${STATSBAR_SIGN_IDENTITY:-StatsBar Local}"
 if security find-identity -v -p codesigning 2>/dev/null | grep -qF "$SIGN_IDENTITY"; then
     echo "🔏 Signing with stable identity: $SIGN_IDENTITY (permissions persist across upgrades)"
     codesign --force --deep -s "$SIGN_IDENTITY" "$APP.app"
