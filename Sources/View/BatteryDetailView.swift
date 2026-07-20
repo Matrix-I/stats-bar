@@ -207,7 +207,7 @@ struct BatteryDetailView: View {
                         .foregroundStyle(healthColor(i.displayMaximumCapacity))
                 }
                 BarView(pct: i.displayMaximumCapacity, color: healthColor(i.displayMaximumCapacity))
-                Text("\(i.maxCapacity) / \(i.designCapacity) mAh (design)")
+                Text("\(i.maxCapacity) / \(i.designCapacity) mAh · raw \(String(format: "%.1f%%", i.healthPercent))")
                     .font(.caption2).foregroundStyle(.secondary).monospacedDigit()
             }
 
@@ -391,6 +391,10 @@ struct BatteryDetailView: View {
                                     .foregroundStyle(healthColor(mc))
                             }
                             BarView(pct: mc, color: healthColor(mc))
+                            if device.nominalChargeCapacity != nil, let raw = device.rawHealthPercent {
+                                Text(String(format: "raw %.1f%% (vs design)", raw))
+                                    .font(.caption2).foregroundStyle(.secondary).monospacedDigit()
+                            }
                         }
                         if let max = device.maxCapacity {
                             InfoRow(label: "Full charge capacity", value: "\(max) mAh")

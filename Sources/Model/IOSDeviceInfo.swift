@@ -60,6 +60,13 @@ struct IOSDeviceInfo: Identifiable {
         }
         return nil
     }
+    /// Raw full-charge-vs-design ratio (AppleRawMaxCapacity / DesignCapacity) — the
+    /// coconutBattery-style number, shown small beside Maximum Capacity for the technically
+    /// inclined. nil (and hidden) when it would just duplicate the figure above.
+    var rawHealthPercent: Double? {
+        guard let max = maxCapacity, max > 0, let design = designCapacity, design > 0 else { return nil }
+        return Double(max) / Double(design) * 100
+    }
     var watts: Double? {
         guard let v = voltageV, let a = amperageA else { return nil }
         return v * a
