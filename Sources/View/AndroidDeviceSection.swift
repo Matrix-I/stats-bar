@@ -38,15 +38,15 @@ struct AndroidDeviceRow: View {
                     }
                     BarView(pct: Double(level), color: .blue)
                 }
-                if let hp = device.healthPercent {
+                if let mc = device.maximumCapacityPercent {
                     HStack(alignment: .firstTextBaseline) {
-                        Text("Health (vs design)").font(.caption2).foregroundStyle(.secondary)
+                        Text("Maximum Capacity").font(.caption2).foregroundStyle(.secondary)
                         Spacer()
-                        Text(String(format: "%.1f%%", hp))
+                        Text(String(format: "%.0f%%", mc))
                             .font(.caption).fontWeight(.medium).monospacedDigit()
-                            .foregroundStyle(healthColor(hp))
+                            .foregroundStyle(healthColor(mc))
                     }
-                    BarView(pct: hp, color: healthColor(hp))
+                    BarView(pct: mc, color: healthColor(mc))
                 }
                 if let max = device.maxCapacity {
                     InfoRow(label: "Full charge capacity", value: "\(max) mAh")

@@ -44,7 +44,12 @@ struct AndroidDeviceInfo: Identifiable {
     /// connected is the right signal — same fix as the Mac's `BatteryInfo.isPluggedIn`.
     var isPluggedIn: Bool { externalConnected || isCharging }
 
-    var healthPercent: Double? {
+    /// "Maximum Capacity" — Android's learned full-charge estimate ("Estimated battery capacity"
+    /// from batterystats) against the OEM design rating. Stock Android exposes no battery-health
+    /// percentage of its own, so this design ratio is the best available; it is the same figure the
+    /// row previously labelled "Health (vs design)". (Distinct from `healthText`, the dumpsys
+    /// battery-health *state* — Good/Overheat/etc. — still shown separately.)
+    var maximumCapacityPercent: Double? {
         guard let max = maxCapacity, max > 0, let design = designCapacity, design > 0 else { return nil }
         return Double(max) / Double(design) * 100
     }

@@ -166,6 +166,7 @@ final class IOSDeviceReader: ObservableObject {
                 dev.serial = reg["Serial"] as? String ?? ""
                 dev.designCapacity = intOrNil(reg["DesignCapacity"])
                 dev.maxCapacity = intOrNil(reg["AppleRawMaxCapacity"]) ?? intOrNil(reg["NominalChargeCapacity"])
+                dev.nominalChargeCapacity = intOrNil(reg["NominalChargeCapacity"])
                 dev.currentCapacity = intOrNil(reg["AppleRawCurrentCapacity"])
                 dev.cycleCount = intOrNil(reg["CycleCount"])
                 if let t = intOrNil(reg["Temperature"]) { dev.temperatureC = Double(t) / 100.0 }
@@ -255,6 +256,7 @@ final class IOSDeviceReader: ObservableObject {
                         // voltage unset so charge stays live (lockedChargePercent) and no stale
                         // dynamic values are shown.
                         m.maxCapacity = prev.maxCapacity
+                        m.nominalChargeCapacity = prev.nominalChargeCapacity
                         m.designCapacity = prev.designCapacity
                         m.cycleCount = prev.cycleCount
                         m.serial = prev.serial

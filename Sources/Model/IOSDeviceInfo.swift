@@ -10,7 +10,8 @@ struct IOSDeviceInfo: Identifiable {
     var iosVersion = ""
     var serial = ""
     var currentCapacity: Int?     // mAh — nil if diagnostics doesn't return this key
-    var maxCapacity: Int?
+    var maxCapacity: Int?         // mAh — raw full-charge capacity (AppleRawMaxCapacity); basis for charge %
+    var nominalChargeCapacity: Int?  // mAh — gauge's learned nominal capacity; basis for iOS's Maximum Capacity
     var designCapacity: Int?
     var cycleCount: Int?
     var temperatureC: Double?
@@ -44,9 +45,20 @@ struct IOSDeviceInfo: Identifiable {
         // domain still reports a coarse 0–100% charge level.
         return lockedChargePercent
     }
-    var healthPercent: Double? {
-        guard let max = maxCapacity, max > 0, let design = designCapacity, design > 0 else { return nil }
-        return Double(max) / Double(design) * 100
+    /// iOS's own "Maximum Capacity" (Settings → Battery → Battery Health). iOS derives it from
+    /// NominalChargeCapacity / DesignCapacity — the gauge's learned nominal capacity against the
+    /// design rating — which reads a couple of points higher than the raw full-charge ratio
+    /// (AppleRawMaxCapacity / DesignCapacity). Falls back to that raw ratio only when the nominal
+    /// key is absent, so the row always shows something.
+    var maximumCapacityPercent: Double? {
+        guard let design = designCapacity, design > 0 else { return nil }
+        if let nominal = nominalChargeCapacity, nominal > 0 {
+            return Double(nominal) / Double(design) * 100
+        }
+        if let max = maxCapacity, max > 0 {
+            return Double(max) / Double(design) * 100
+        }
+        return nil
     }
     var watts: Double? {
         guard let v = voltageV, let a = amperageA else { return nil }

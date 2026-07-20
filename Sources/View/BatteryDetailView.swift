@@ -368,7 +368,7 @@ struct BatteryDetailView: View {
 
                     if let err = device.errorMessage {
                         Text(err).font(.caption2).foregroundStyle(.red)
-                    } else if device.chargePercent == nil && device.healthPercent == nil {
+                    } else if device.chargePercent == nil && device.maximumCapacityPercent == nil {
                         if !device.isLocked {
                             Text("⚠ Couldn't read health data — unlock the device + Trust, then tap Refresh.")
                                 .font(.caption2).foregroundStyle(.orange)
@@ -382,15 +382,15 @@ struct BatteryDetailView: View {
                             }
                             BarView(pct: cp, color: .blue)
                         }
-                        if let hp = device.healthPercent {
+                        if let mc = device.maximumCapacityPercent {
                             HStack(alignment: .firstTextBaseline) {
-                                Text("Health").font(.caption2).foregroundStyle(.secondary)
+                                Text("Maximum Capacity").font(.caption2).foregroundStyle(.secondary)
                                 Spacer()
-                                Text(String(format: "%.1f%%", hp))
+                                Text(String(format: "%.0f%%", mc))
                                     .font(.caption).fontWeight(.medium).monospacedDigit()
-                                    .foregroundStyle(healthColor(hp))
+                                    .foregroundStyle(healthColor(mc))
                             }
-                            BarView(pct: hp, color: healthColor(hp))
+                            BarView(pct: mc, color: healthColor(mc))
                         }
                         if let max = device.maxCapacity {
                             InfoRow(label: "Full charge capacity", value: "\(max) mAh")
