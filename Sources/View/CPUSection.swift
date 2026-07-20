@@ -38,6 +38,8 @@ struct CPUDetailView: View {
 
             averageLoad
 
+            topProcesses
+
             Divider()
 
             HStack {
@@ -144,6 +146,39 @@ struct CPUDetailView: View {
     }
 
     private func load(_ v: Double) -> String { String(format: "%.2f", v) }
+
+    // MARK: Top processes
+
+    @ViewBuilder
+    private var topProcesses: some View {
+        SectionCaption("TOP PROCESSES")
+        if info.topProcesses.isEmpty {
+            Text("Reading…")
+                .font(.caption2).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            VStack(spacing: 6) {
+                HStack {
+                    Text("Process")
+                    Spacer()
+                    Text("Usage")
+                }
+                .font(.system(size: 10, weight: .semibold))
+                .tracking(0.5)
+                .foregroundStyle(.secondary)
+
+                ForEach(info.topProcesses) { p in
+                    HStack(spacing: 8) {
+                        Text(p.name).lineLimit(1).truncationMode(.tail)
+                        Spacer(minLength: 8)
+                        Text(String(format: "%.1f%%", p.cpuPercent))
+                            .fontWeight(.medium).monospacedDigit()
+                    }
+                    .font(.system(size: 12))
+                }
+            }
+        }
+    }
 }
 
 /// A DETAIL row: a colour-keyed square (tying it to the ring), the label in white, and the value.

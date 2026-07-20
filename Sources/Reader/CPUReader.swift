@@ -34,6 +34,16 @@ final class CPUReader: ObservableObject {
     private let pCoreCount: Int   // performance cores (perflevel0)
     private let tempKeys: [String]
 
+    // Top-processes list: read via `ps` on a background queue (it blocks briefly), at most every
+    // `topInterval`, only while the panel is open. Cached so the 1 Hz load path can republish it
+    // without re-running ps. All touched on the main thread except the read itself.
+    private var cachedTop: [ProcessSample] = []
+    private var topReadInFlight = false
+    private var lastTopRead = Date.distantPast
+    private let topQueue = DispatchQueue(label: "CPUReader.top", qos: .utility)
+    private static let topInterval: TimeInterval = 2
+    private static let topCount = 6
+
     private static let idleInterval: TimeInterval = 2   // menu-bar % only
     private static let activeInterval: TimeInterval = 1 // live readout while the panel is open
 
@@ -120,7 +130,49 @@ final class CPUReader: ObservableObject {
             if !vals.isEmpty { out.temperatureC = vals.reduce(0, +) / Double(vals.count) }
         }
 
+        // Top processes — also popover-only; publish the last list we have.
+        if panelOpen { maybeReadTopProcesses() }
+        out.topProcesses = cachedTop
+
         info = out
+    }
+
+    /// Refresh the top-processes list at most every `topInterval`, off the main thread (ps blocks
+    /// briefly). Mirrors BatteryReader's cached, gated system_profiler read.
+    private func maybeReadTopProcesses() {
+        guard !topReadInFlight, Date().timeIntervalSince(lastTopRead) >= Self.topInterval else { return }
+        topReadInFlight = true
+        topQueue.async { [weak self] in
+            let procs = Self.readTopProcesses(Self.topCount)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.lastTopRead = Date()
+                self.topReadInFlight = false
+                self.cachedTop = procs
+                // Republish right away so the list appears promptly on first open, not one tick later.
+                var cur = self.info
+                cur.topProcesses = procs
+                self.info = cur
+            }
+        }
+    }
+
+    /// The `count` heaviest processes by CPU, via `ps` sorted descending. `-c` prints the accounting
+    /// name (which may contain spaces), so pid + pcpu are the first two whitespace fields and the
+    /// name is the remainder. pid 0 (kernel_task) is skipped. Reuses DeviceTool.run for its timeout
+    /// and concurrent pipe draining.
+    private static func readTopProcesses(_ count: Int) -> [ProcessSample] {
+        guard let data = DeviceTool.run("/bin/ps", ["-A", "-c", "-o", "pid=,pcpu=,comm=", "-r"]),
+              let out = String(data: data, encoding: .utf8) else { return [] }
+        var result: [ProcessSample] = []
+        for line in out.split(separator: "\n") {
+            let parts = line.split(separator: " ", omittingEmptySubsequences: true)
+            guard parts.count >= 3, let pid = Int(parts[0]), let cpu = Double(parts[1]), pid != 0 else { continue }
+            let name = parts[2...].joined(separator: " ")
+            result.append(ProcessSample(pid: pid, name: name, cpuPercent: cpu))
+            if result.count >= count { break }
+        }
+        return result
     }
 
     // MARK: - Sampling

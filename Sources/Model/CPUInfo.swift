@@ -4,6 +4,15 @@
 
 import Foundation
 
+/// One row of the TOP PROCESSES table: a process's accounting name and its CPU share (as reported
+/// by `ps`, a decaying average, so it can momentarily exceed 100 % across multiple cores).
+struct ProcessSample: Identifiable {
+    let pid: Int
+    let name: String
+    let cpuPercent: Double
+    var id: Int { pid }
+}
+
 struct CPUInfo {
     // Overall load, as a share of total CPU ticks in the last sampling window (0…100).
     // `user` folds in nice (scheduler-niced user time), matching how Activity Monitor / Stats
@@ -33,6 +42,9 @@ struct CPUInfo {
     var loadAverage1 = 0.0
     var loadAverage5 = 0.0
     var loadAverage15 = 0.0
+
+    // The heaviest CPU consumers right now (from `ps`, refreshed a little slower than the load).
+    var topProcesses: [ProcessSample] = []
 
     /// The figure shown in the usage ring and menu bar: everything that isn't idle.
     var usagePercent: Double { max(0, min(100, 100 - idlePercent)) }
