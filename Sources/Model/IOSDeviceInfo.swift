@@ -9,8 +9,9 @@ struct IOSDeviceInfo: Identifiable {
     var model = ""
     var iosVersion = ""
     var serial = ""
-    var currentCapacity: Int?     // mAh — nil if diagnostics doesn't return this key
-    var maxCapacity: Int?         // mAh — raw full-charge capacity (AppleRawMaxCapacity); basis for charge %
+    var currentCapacity: Int?     // mAh — raw coulomb count (AppleRawCurrentCapacity)
+    var stateOfCharge: Double?    // % — calibrated State of Charge iOS shows (relative CurrentCapacity), not the raw mAh ratio
+    var maxCapacity: Int?         // mAh — raw full-charge capacity (AppleRawMaxCapacity)
     var nominalChargeCapacity: Int?  // mAh — gauge's learned nominal capacity; basis for iOS's Maximum Capacity
     var designCapacity: Int?
     var cycleCount: Int?
@@ -38,11 +39,15 @@ struct IOSDeviceInfo: Identifiable {
     var isPluggedIn: Bool { externalConnected || isCharging }
 
     var chargePercent: Double? {
+        // The calibrated State of Charge iOS itself shows (0–100), read from the relative
+        // CurrentCapacity key — NOT AppleRawCurrentCapacity / AppleRawMaxCapacity, which reads a
+        // point or two off (same reason as the Mac's BatteryInfo.chargePercent).
+        if let soc = stateOfCharge { return soc }
         if let cur = currentCapacity, let max = maxCapacity, max > 0 {
             return Double(cur) / Double(max) * 100
         }
-        // Locked device: the diagnostics registry (mAh) is unavailable, but the lockdown battery
-        // domain still reports a coarse 0–100% charge level.
+        // Locked device: the diagnostics registry is unavailable, but the lockdown battery domain
+        // still reports a coarse 0–100% charge level (also the calibrated SoC).
         return lockedChargePercent
     }
     /// iOS's own "Maximum Capacity" (Settings → Battery → Battery Health). iOS derives it from

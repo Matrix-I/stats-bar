@@ -168,6 +168,13 @@ final class IOSDeviceReader: ObservableObject {
                 dev.maxCapacity = intOrNil(reg["AppleRawMaxCapacity"]) ?? intOrNil(reg["NominalChargeCapacity"])
                 dev.nominalChargeCapacity = intOrNil(reg["NominalChargeCapacity"])
                 dev.currentCapacity = intOrNil(reg["AppleRawCurrentCapacity"])
+                // Calibrated State of Charge iOS shows (the relative CurrentCapacity key, 0–100 with
+                // MaxCapacity == 100) — not the raw AppleRawCurrentCapacity / AppleRawMaxCapacity
+                // ratio, which reads a point or two low. Same fix as the Mac's BatteryReader.
+                if let relMax = intOrNil(reg["MaxCapacity"]), relMax > 0,
+                   let relCur = intOrNil(reg["CurrentCapacity"]) {
+                    dev.stateOfCharge = min(100, Double(relCur) / Double(relMax) * 100)
+                }
                 dev.cycleCount = intOrNil(reg["CycleCount"])
                 if let t = intOrNil(reg["Temperature"]) { dev.temperatureC = Double(t) / 100.0 }
                 if let v = intOrNil(reg["Voltage"]) { dev.voltageV = Double(v) / 1000.0 }
