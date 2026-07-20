@@ -12,6 +12,17 @@ final class BatteryReader: ObservableObject {
     private var interval: TimeInterval = 0
     private let smc = SMC()
 
+    // "Maximum Capacity" (macOS's own battery-health figure — System Information / Battery Health)
+    // has no public IOKit key: Apple computes it with a private, smoothed algorithm that no raw
+    // ratio reproduces. So we read the exact value macOS reports from `system_profiler`, but only
+    // every few minutes on a background queue — battery health drifts over weeks, never per-second,
+    // so the 1 Hz gauge path below never pays that cost. These are all touched on the main thread.
+    private var cachedMaxCapacity: Int?
+    private var healthReadInFlight = false
+    private var lastHealthRead = Date.distantPast
+    private let healthQueue = DispatchQueue(label: "BatteryReader.health", qos: .utility)
+    private static let healthInterval: TimeInterval = 300
+
     private static let idleInterval: TimeInterval = 1    // refresh every second, even for the menu-bar glyph alone
     private static let activeInterval: TimeInterval = 1  // live readout while the detail panel is open
 
@@ -62,6 +73,20 @@ final class BatteryReader: ObservableObject {
         i.currentCapacity = intOf(props["AppleRawCurrentCapacity"])
         if i.currentCapacity == 0 { i.currentCapacity = intOf(props["CurrentCapacity"]) }
 
+        // State of Charge — the calibrated 0–100 % macOS reports (System Information's
+        // "State of Charge (%)"), NOT the raw mAh ratio above. On Apple Silicon the relative
+        // "CurrentCapacity"/"MaxCapacity" keys are already percentages (MaxCapacity == 100,
+        // CurrentCapacity == the SoC, which the gauge pins to 100 at full); on Intel they hold
+        // mAh and the ratio yields the same percentage. Falls back to the raw mAh ratio only if
+        // the relative max is somehow absent.
+        let relMax = intOf(props["MaxCapacity"])
+        let relCurrent = intOf(props["CurrentCapacity"])
+        if relMax > 0 {
+            i.stateOfCharge = min(100, Double(relCurrent) / Double(relMax) * 100)
+        } else if i.maxCapacity > 0 {
+            i.stateOfCharge = min(100, Double(i.currentCapacity) / Double(i.maxCapacity) * 100)
+        }
+
         i.cycleCount = intOf(props["CycleCount"])
         i.temperatureC = Double(intOf(props["Temperature"])) / 100.0
         i.voltageV = Double(intOf(props["Voltage"])) / 1000.0
@@ -98,7 +123,43 @@ final class BatteryReader: ObservableObject {
         // Live RAM + swap usage (Mach VM statistics — independent of the SMC / battery gauge).
         i.memory = MemoryStats.read()
 
+        // macOS's own "Maximum Capacity" — refreshed at most every few minutes, off the main
+        // thread (see the note on the cache fields above). Publish the last value we have.
+        maybeReadMaximumCapacity()
+        i.maximumCapacityPercent = cachedMaxCapacity
+
         let snapshot = i
         DispatchQueue.main.async { self.info = snapshot }
+    }
+
+    /// Refresh macOS's "Maximum Capacity" at most once every `healthInterval`, off the main thread.
+    /// Called from `refresh()` (main); the read itself runs on `healthQueue` and hands the result
+    /// back on main so the cache fields are only ever touched there.
+    private func maybeReadMaximumCapacity() {
+        guard !healthReadInFlight,
+              Date().timeIntervalSince(lastHealthRead) >= Self.healthInterval else { return }
+        healthReadInFlight = true
+        healthQueue.async { [weak self] in
+            let value = Self.readMaximumCapacity()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.lastHealthRead = Date()
+                self.healthReadInFlight = false
+                if let value { self.cachedMaxCapacity = value }
+            }
+        }
+    }
+
+    /// The integer percent from `system_profiler`'s "Maximum Capacity: NN%" line, or nil on failure.
+    /// Reuses DeviceTool.run for its timeout + concurrent pipe draining (system_profiler is fast,
+    /// ~0.2 s, but this keeps a wedged process from ever hanging the health queue).
+    private static func readMaximumCapacity() -> Int? {
+        guard let data = DeviceTool.run("/usr/sbin/system_profiler", ["SPPowerDataType"]),
+              let out = String(data: data, encoding: .utf8) else { return nil }
+        for line in out.split(separator: "\n") where line.contains("Maximum Capacity") {
+            let digits = String(line.filter(\.isNumber))
+            if let n = Int(digits), n > 0, n <= 100 { return n }
+        }
+        return nil
     }
 }

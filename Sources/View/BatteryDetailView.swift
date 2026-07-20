@@ -193,18 +193,20 @@ struct BatteryDetailView: View {
                     .font(.caption2).foregroundStyle(.secondary).monospacedDigit()
             }
 
-            // Health
+            // Maximum Capacity — macOS's own battery-health figure (System Information / Battery
+            // Health), read via system_profiler in BatteryReader. Falls back to the raw
+            // full-charge-vs-design fraction only until the first read lands.
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("Health (vs design)")
+                    Text("Maximum Capacity")
                         .font(.caption).foregroundStyle(.secondary)
                     Spacer()
-                    Text(String(format: "%.1f%%", i.healthPercent))
+                    Text(String(format: "%.0f%%", i.displayMaximumCapacity))
                         .font(.system(size: 16, weight: .semibold))
                         .monospacedDigit()
-                        .foregroundStyle(healthColor(i.healthPercent))
+                        .foregroundStyle(healthColor(i.displayMaximumCapacity))
                 }
-                BarView(pct: i.healthPercent, color: healthColor(i.healthPercent))
+                BarView(pct: i.displayMaximumCapacity, color: healthColor(i.displayMaximumCapacity))
                 Text("\(i.maxCapacity) / \(i.designCapacity) mAh (design)")
                     .font(.caption2).foregroundStyle(.secondary).monospacedDigit()
             }

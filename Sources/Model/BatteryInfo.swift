@@ -6,9 +6,11 @@ import Foundation
 struct BatteryInfo {
     var deviceName = "Battery"
     var serial = ""
-    var currentCapacity = 0      // mAh
+    var currentCapacity = 0      // mAh — raw coulomb count (AppleRawCurrentCapacity)
     var maxCapacity = 0          // mAh — actual full charge capacity
     var designCapacity = 0       // mAh — design capacity
+    var stateOfCharge = 0.0      // % — calibrated State of Charge macOS shows (0–100), not the raw mAh ratio
+    var maximumCapacityPercent: Int? = nil  // % — macOS's own "Maximum Capacity" (System Information / Battery Health); nil until first read
     var cycleCount = 0
     var temperatureC = 0.0
     var voltageV = 0.0
@@ -46,11 +48,21 @@ struct BatteryInfo {
     /// charger power is the right signal; macOS keeps its own menu-bar bolt lit the same way.
     var isPluggedIn: Bool { externalConnected || isCharging }
 
-    var chargePercent: Double {
-        maxCapacity > 0 ? Double(currentCapacity) / Double(maxCapacity) * 100 : 0
-    }
+    /// The percentage shown in the menu bar and detail panel. This is the calibrated State of
+    /// Charge (what macOS's System Information reports and what reaches 100 % at full), NOT the
+    /// raw mAh ratio AppleRawCurrentCapacity / AppleRawMaxCapacity — that raw ratio reads a few
+    /// percent low even when the battery is full, because battery-health management holds the
+    /// pack just under its learned full-charge capacity. See BatteryReader for how it's read.
+    var chargePercent: Double { stateOfCharge }
     var healthPercent: Double {
         designCapacity > 0 ? Double(maxCapacity) / Double(designCapacity) * 100 : 0
+    }
+    /// Percentage to show for "Maximum Capacity" — macOS's own figure once we've read it (see
+    /// BatteryReader), falling back to the raw full-charge-vs-design fraction only until the
+    /// first read lands. macOS's figure comes from a private, smoothed algorithm no public IOKit
+    /// key reproduces, so the raw ratio here reads a few points lower than what macOS reports.
+    var displayMaximumCapacity: Double {
+        maximumCapacityPercent.map(Double.init) ?? healthPercent
     }
     var watts: Double { voltageV * amperageA }
 }
