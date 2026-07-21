@@ -35,6 +35,7 @@ final class CPUReader: ObservableObject {
     // Fixed for the machine's lifetime.
     private let eCoreCount: Int   // efficiency cores (perflevel1) — the low indices
     private let pCoreCount: Int   // performance cores (perflevel0)
+    private let chipName: String? // marketing name, e.g. "Apple M1 Pro"
     private let tempKeys: [String]
 
     // Top-processes list: read via `ps` on a background queue (it blocks briefly), at most every
@@ -53,6 +54,7 @@ final class CPUReader: ObservableObject {
     init() {
         eCoreCount = Self.sysctlInt("hw.perflevel1.logicalcpu") ?? 0
         pCoreCount = Self.sysctlInt("hw.perflevel0.logicalcpu") ?? 0
+        chipName = Self.sysctlString("machdep.cpu.brand_string")
         tempKeys = Self.discoverTemperatureKeys(smc)
 
         refresh()
@@ -84,6 +86,7 @@ final class CPUReader: ObservableObject {
         out.coreCount = cur.count
         out.efficiencyCoreCount = eCoreCount
         out.performanceCoreCount = pCoreCount
+        out.chipName = chipName
         out.uptimeSeconds = Self.uptime()
 
         if let prev = prevTicks, prev.count == cur.count {
@@ -239,6 +242,15 @@ final class CPUReader: ObservableObject {
         var s = MemoryLayout<Int>.size
         guard sysctlbyname(name, &v, &s, nil, 0) == 0 else { return nil }
         return v
+    }
+
+    private static func sysctlString(_ name: String) -> String? {
+        var size = 0
+        guard sysctlbyname(name, nil, &size, nil, 0) == 0, size > 0 else { return nil }
+        var buf = [CChar](repeating: 0, count: size)
+        guard sysctlbyname(name, &buf, &size, nil, 0) == 0 else { return nil }
+        let s = String(cString: buf)
+        return s.isEmpty ? nil : s
     }
 
     private static func uptime() -> Double {

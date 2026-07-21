@@ -33,6 +33,10 @@ struct CPUInfo {
     var efficiencyCoreCount = 0
     var performanceCoreCount = 0
 
+    // Marketing name of the chip, from sysctl machdep.cpu.brand_string (e.g. "Apple M1 Pro").
+    // nil when the key is unreadable.
+    var chipName: String? = nil
+
     // Average CPU-die temperature in °C, or nil when no sensor is readable (SMC unavailable, or a
     // chip that exposes none of the keys we probe).
     var temperatureC: Double? = nil
