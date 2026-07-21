@@ -30,6 +30,13 @@ struct ControlCenterView: View {
     /// Opens a metric's own detail popover; supplied by AppDelegate.
     let openDetail: (StatMetric) -> Void
 
+    /// The app's marketing version (CFBundleShortVersionString), shown top-right in the header — e.g.
+    /// "v2.2.0". Read from the bundle so it tracks build_app.sh's version bump with no code change.
+    private var appVersion: String {
+        let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+        return v.map { "v\($0)" } ?? ""
+    }
+
     // Per-item menu-bar visibility. Defaults match AppDelegate's `object(forKey:) as? Bool ?? true`
     // reads, so a fresh install shows every item until the user turns one off here.
     @AppStorage("showBatteryItem")   private var showBattery = true
@@ -43,6 +50,12 @@ struct ControlCenterView: View {
             Text("StatsBar")
                 .font(.system(size: 19.5, weight: .semibold))
                 .frame(maxWidth: .infinity, alignment: .center)
+                .overlay(alignment: .trailing) {
+                    Text(appVersion)
+                        .font(.system(size: 11, weight: .medium))
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
 
             overview
 
