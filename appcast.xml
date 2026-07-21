@@ -6,5 +6,14 @@
     <description>Most recent StatsBar updates.</description>
     <language>en</language>
     <!-- APPCAST_ITEMS: update_appcast.sh prepends each release's <item> immediately below this line. -->
+    <item>
+      <title>Version 2.3.0</title>
+      <pubDate>Tue, 21 Jul 2026 22:11:15 +0700</pubDate>
+      <sparkle:version>2.3.0</sparkle:version>
+      <sparkle:shortVersionString>2.3.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <sparkle:releaseNotesLink>https://github.com/Matrix-I/stats-bar/releases/tag/v2.3.0</sparkle:releaseNotesLink>
+      <enclosure url="https://github.com/Matrix-I/stats-bar/releases/download/v2.3.0/StatsBar-v2.3.0.dmg" sparkle:edSignature="G2GevQYE4cmP4IoehTEfNRJA1LcMgaNo8+jmNqT76n+wttaBSRn2IooY93bYrz5vyTuWwuyk4iI8yhFiNZxkAQ==" length="2314881" type="application/octet-stream" />
+    </item>
   </channel>
 </rss>
