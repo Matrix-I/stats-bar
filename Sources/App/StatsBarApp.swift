@@ -31,6 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let cpuReader = CPUReader()
     private let memoryReader = MemoryReader()
     private let bluetoothReader = BluetoothReader()
+    private let updater = Updater()
 
     private var controlCenterItem: NSStatusItem!
     private var batteryItem: NSStatusItem!
@@ -60,7 +61,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         configure(popover: controlCenterPopover,
                   root: ControlCenterView(battery: batteryReader, cpu: cpuReader, memory: memoryReader,
                                           network: networkReader, bluetooth: bluetoothReader,
-                                          openDetail: { [weak self] metric in self?.presentDetail(metric) }))
+                                          updater: updater,
+                                          openDetail: { [weak self] metric in self?.presentDetail(metric) },
+                                          checkForUpdates: { [weak self] in
+                                              self?.closeAll()
+                                              self?.updater.checkForUpdates()
+                                          }))
         configure(popover: batteryPopover,
                   root: BatteryDetailView(reader: batteryReader, iosReader: iosReader, androidReader: androidReader))
         configure(popover: networkPopover, root: NetworkDetailView(reader: networkReader))
