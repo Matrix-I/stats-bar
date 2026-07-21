@@ -146,45 +146,19 @@ func networkMenuBarImage(up: Double, down: Double) -> NSImage {
     return img
 }
 
-/// CPU menu-bar glyph: the `cpu` SF Symbol followed by the live usage percentage, baked into a
-/// single **template** image (so the system tints it white-on-dark / black-on-light like the
-/// battery glyph). Monospaced digits and a fixed layout keep the item from jittering as the number
-/// changes width. The colour set on the text is ignored for a template — only its alpha matters.
-func cpuMenuBarImage(percent: Int) -> NSImage {
+/// A menu-bar glyph made of an SF Symbol followed by a live percentage, baked into a single
+/// **template** image (so the system tints it white-on-dark / black-on-light like the battery glyph).
+/// Shared by the CPU (`cpu`) and RAM (`memorychip`) items. Monospaced digits and a fixed layout keep
+/// the item from jittering as the number changes width. The colour set on the text is ignored for a
+/// template — only its alpha matters.
+func symbolPercentMenuBarImage(symbol: String, percent: Int) -> NSImage {
     let h: CGFloat = 13, symH: CGFloat = 12
     let text = "\(percent)%" as NSString
     let font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
     let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.black]
     let textSize = text.size(withAttributes: attrs)
 
-    let sym = NSImage(systemSymbolName: "cpu", accessibilityDescription: nil)
-    sym?.isTemplate = true
-    let symW = sym.map { symH * ($0.size.width / max($0.size.height, 1)) } ?? 0
-    let gap: CGFloat = 3
-    let w = symW + gap + ceil(textSize.width)
-
-    let img = NSImage(size: NSSize(width: max(w, 1), height: h), flipped: false) { _ in
-        sym?.draw(in: NSRect(x: 0, y: (h - symH) / 2, width: symW, height: symH),
-                  from: .zero, operation: .sourceOver, fraction: 1)
-        text.draw(at: NSPoint(x: symW + gap, y: (h - textSize.height) / 2 + 0.3), withAttributes: attrs)
-        return true
-    }
-    img.isTemplate = true
-    return img
-}
-
-/// Memory menu-bar glyph: the `memorychip` SF Symbol followed by the live usage percentage, baked
-/// into a single **template** image (so the system tints it white-on-dark / black-on-light like the
-/// battery and CPU glyphs). Monospaced digits and a fixed layout keep the item from jittering as the
-/// number changes width. The colour set on the text is ignored for a template — only its alpha matters.
-func memoryMenuBarImage(percent: Int) -> NSImage {
-    let h: CGFloat = 13, symH: CGFloat = 12
-    let text = "\(percent)%" as NSString
-    let font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
-    let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.black]
-    let textSize = text.size(withAttributes: attrs)
-
-    let sym = NSImage(systemSymbolName: "memorychip", accessibilityDescription: nil)
+    let sym = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
     sym?.isTemplate = true
     let symW = sym.map { symH * ($0.size.width / max($0.size.height, 1)) } ?? 0
     let gap: CGFloat = 3

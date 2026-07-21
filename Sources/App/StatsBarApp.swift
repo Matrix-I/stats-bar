@@ -198,8 +198,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setVisibility(bluetoothItem, key: "showBluetoothItem")
 
         batteryItem?.button?.image = currentBatteryImage()
-        cpuItem?.button?.image = cpuMenuBarImage(percent: Int(cpuReader.info.usagePercent.rounded()))
-        memoryItem?.button?.image = memoryMenuBarImage(percent: Int(memoryReader.info.usagePercent.rounded()))
+        cpuItem?.button?.image = symbolPercentMenuBarImage(symbol: "cpu", percent: Int(cpuReader.info.usagePercent.rounded()))
+        memoryItem?.button?.image = symbolPercentMenuBarImage(symbol: "memorychip", percent: Int(memoryReader.info.usagePercent.rounded()))
         networkItem?.button?.image = networkMenuBarImage(up: networkReader.info.uploadRate,
                                                          down: networkReader.info.downloadRate)
     }
