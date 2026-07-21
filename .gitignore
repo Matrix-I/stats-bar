@@ -2,6 +2,9 @@ StatsBar.app/
 StatsBar
 *.dmg
 !releases/*.dmg
+# Sparkle is fetched by fetch_sparkle.sh (pinned version), not committed — keeps the repo lean.
+Frameworks/
+.sparkle-tools/
 __pycache__/
 *.pyc
 .claude/

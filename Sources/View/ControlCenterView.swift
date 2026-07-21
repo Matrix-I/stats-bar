@@ -27,8 +27,14 @@ struct ControlCenterView: View {
     @ObservedObject var network: NetworkReader
     @ObservedObject var bluetooth: BluetoothReader
 
+    /// Sparkle updater — backs the "Check for updates" button and the automatic-check toggle.
+    let updater: Updater
+
     /// Opens a metric's own detail popover; supplied by AppDelegate.
     let openDetail: (StatMetric) -> Void
+
+    /// Closes this popover and starts a user-initiated Sparkle check; supplied by AppDelegate.
+    let checkForUpdates: () -> Void
 
     /// The app's marketing version (CFBundleShortVersionString), shown top-right in the header — e.g.
     /// "v2.2.0". Read from the bundle so it tracks build_app.sh's version bump with no code change.
@@ -71,6 +77,20 @@ struct ControlCenterView: View {
             .toggleStyle(.switch)
             .controlSize(.small)
             .tint(.green)
+
+            Toggle("Automatically check for updates", isOn: Binding(
+                get: { updater.automaticallyChecks },
+                set: { updater.automaticallyChecks = $0 }
+            ))
+            .font(.system(size: 13))
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .tint(.green)
+
+            Button(action: checkForUpdates) {
+                Text("Check for updates…").font(.system(size: 13))
+            }
+            .buttonStyle(.link)
 
             Divider()
 

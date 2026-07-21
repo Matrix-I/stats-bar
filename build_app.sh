@@ -16,17 +16,30 @@ for arg in "$@"; do
     esac
 done
 
+# Sparkle (auto-update) is linked in. Fetch the pinned framework if it's not vendored yet — this is a
+# no-op on subsequent builds, so normal rebuilds don't touch the network.
+./fetch_sparkle.sh
+
 echo "🔨 Compiling $APP (Sources/*.swift) ..."
 # Compile every source file in Sources/ as one module. The other top-level *.swift files
 # (icon_gen.swift, screeninfo.swift) are standalone tools and are deliberately excluded.
+# -F/-framework link Sparkle; the added @rpath resolves it from Contents/Frameworks at runtime.
 SOURCES=$(find Sources -name '*.swift')
 # shellcheck disable=SC2086
-swiftc -O -parse-as-library $SOURCES -o "$APP"
+swiftc -O -parse-as-library $SOURCES \
+    -F "$PWD/Frameworks" -framework Sparkle \
+    -Xlinker -rpath -Xlinker "@executable_path/../Frameworks" \
+    -o "$APP"
 
 echo "📦 Building the app bundle ..."
 rm -rf "$APP.app"
 mkdir -p "$APP.app/Contents/MacOS" "$APP.app/Contents/Resources"
 mv "$APP" "$APP.app/Contents/MacOS/$APP"
+
+# Embed Sparkle so the linked @rpath (@executable_path/../Frameworks) resolves at runtime. -R keeps
+# the framework's version symlinks intact (codesign requires the canonical Versions/Current layout).
+mkdir -p "$APP.app/Contents/Frameworks"
+cp -R Frameworks/Sparkle.framework "$APP.app/Contents/Frameworks/"
 
 if [ -f "AppIcon.icns" ]; then
     cp "AppIcon.icns" "$APP.app/Contents/Resources/AppIcon.icns"
@@ -44,8 +57,18 @@ cat > "$APP.app/Contents/Info.plist" <<'PLIST'
     <key>CFBundleIconFile</key>         <string>AppIcon</string>
     <key>CFBundlePackageType</key>      <string>APPL</string>
     <key>CFBundleShortVersionString</key><string>2.2.0</string>
+    <!-- Sparkle compares CFBundleVersion between the running app and the appcast to decide whether an
+         update is newer, so it must be bumped alongside CFBundleShortVersionString on every release. -->
+    <key>CFBundleVersion</key>          <string>2.2.0</string>
     <key>LSMinimumSystemVersion</key>   <string>13.0</string>
     <key>LSUIElement</key>              <true/>
+    <!-- Sparkle auto-update. SUFeedURL is the appcast (kept in the repo, served raw from GitHub);
+         SUPublicEDKey is the EdDSA public key whose private half (in the release machine's keychain)
+         signs each update — Sparkle refuses any download that doesn't verify against it. -->
+    <key>SUFeedURL</key>
+    <string>https://raw.githubusercontent.com/Matrix-I/stats-bar/main/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>T9m2CL18FlN4xB3BR8rb6XNk7kFTCk4IWMIXlcp7WGE=</string>
     <!-- The Network item reads the Wi-Fi network name (SSID), which macOS 14+ only reveals to apps
          holding Location Services authorization. Both keys are provided so the prompt shows on old
          and new systems; nothing else in the app uses location. -->
@@ -85,11 +108,23 @@ PLIST
 SIGN_IDENTITY="${STATSBAR_SIGN_IDENTITY:-StatsBar Local}"
 if security find-identity -p codesigning 2>/dev/null | grep -qF "\"$SIGN_IDENTITY\""; then
     echo "🔏 Signing with stable identity: $SIGN_IDENTITY (permissions persist across upgrades)"
-    codesign --force --deep -s "$SIGN_IDENTITY" "$APP.app"
+    SIGN_TO="$SIGN_IDENTITY"
 else
     echo "🔏 No stable signing identity ('$SIGN_IDENTITY') — ad-hoc signing."
     echo "   Permissions (e.g. Location) will re-prompt after each rebuild. See build_app.sh header."
+    SIGN_TO="-"
+fi
+
+# Sign inside-out: the embedded Sparkle framework first (it nests Updater.app + XPC services, which
+# codesign --deep signs with our identity so Sparkle's runtime sees a matching signature), then seal
+# the app bundle around it. Ad-hoc ('-') signing is tolerated on failure; a real identity must succeed.
+SPARKLE_FW="$APP.app/Contents/Frameworks/Sparkle.framework"
+if [ "$SIGN_TO" = "-" ]; then
+    codesign --force --deep -s - "$SPARKLE_FW" 2>/dev/null || true
     codesign --force -s - "$APP.app" 2>/dev/null || true
+else
+    codesign --force --deep -s "$SIGN_TO" "$SPARKLE_FW"
+    codesign --force -s "$SIGN_TO" "$APP.app"
 fi
 
 # Force LaunchServices to re-register this exact bundle and drop any cached icon render, so the
