@@ -237,6 +237,18 @@ func bluetoothMenuBarImage() -> NSImage {
     return img
 }
 
+/// Control Center menu-bar glyph: a small 2×2 grid ("dashboard of tiles") rendered as a template
+/// image so the system tints it white-on-dark / black-on-light like the other glyphs. This is the
+/// always-visible hub item; unlike the others it carries no live number, so it's set once at launch.
+func controlCenterMenuBarImage() -> NSImage {
+    let cfg = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
+    let base = NSImage(systemSymbolName: "square.grid.2x2.fill", accessibilityDescription: "StatsBar")
+        ?? NSImage(systemSymbolName: "square.grid.2x2", accessibilityDescription: "StatsBar")
+    let img = base?.withSymbolConfiguration(cfg) ?? base ?? NSImage()
+    img.isTemplate = true
+    return img
+}
+
 /// Short bytes/sec for the menu bar — one significant decimal from KB up, so the label stays narrow.
 private func menuBarRate(_ bytesPerSec: Double) -> String {
     let v = max(0, bytesPerSec)

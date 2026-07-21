@@ -32,18 +32,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let memoryReader = MemoryReader()
     private let bluetoothReader = BluetoothReader()
 
+    private var controlCenterItem: NSStatusItem!
     private var batteryItem: NSStatusItem!
     private var networkItem: NSStatusItem!
     private var cpuItem: NSStatusItem!
     private var memoryItem: NSStatusItem!
     private var bluetoothItem: NSStatusItem!
+    private let controlCenterPopover = NSPopover()
     private let batteryPopover = NSPopover()
     private let networkPopover = NSPopover()
     private let cpuPopover = NSPopover()
     private let memoryPopover = NSPopover()
     private let bluetoothPopover = NSPopover()
 
-    private var allPopovers: [NSPopover] { [batteryPopover, networkPopover, cpuPopover, memoryPopover, bluetoothPopover] }
+    private var allPopovers: [NSPopover] { [controlCenterPopover, batteryPopover, networkPopover, cpuPopover, memoryPopover, bluetoothPopover] }
 
     /// Refreshes the two status-item glyphs ~1 Hz (cheap to rebuild; the readers update at that rate
     /// anyway). Also the hook for menu-bar toggle changes to take effect within a second.
@@ -55,12 +57,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Menu-bar-only app: no Dock icon, no app menu (the .app bundle also sets LSUIElement).
         NSApp.setActivationPolicy(.accessory)
 
+        configure(popover: controlCenterPopover,
+                  root: ControlCenterView(battery: batteryReader, cpu: cpuReader, memory: memoryReader,
+                                          network: networkReader, bluetooth: bluetoothReader,
+                                          openDetail: { [weak self] metric in self?.presentDetail(metric) }))
         configure(popover: batteryPopover,
                   root: BatteryDetailView(reader: batteryReader, iosReader: iosReader, androidReader: androidReader))
         configure(popover: networkPopover, root: NetworkDetailView(reader: networkReader))
         configure(popover: cpuPopover, root: CPUDetailView(reader: cpuReader))
         configure(popover: memoryPopover, root: MemoryDetailView(reader: memoryReader))
         configure(popover: bluetoothPopover, root: BluetoothDetailView(reader: bluetoothReader))
+
+        // The Control Center is created first (leftmost) and is the one item with no visibility
+        // toggle — it's the always-present hub for turning the others back on. Its glyph carries no
+        // live number, so it's set once here rather than rebuilt each second in refreshLabels.
+        controlCenterItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        controlCenterItem.button?.target = self
+        controlCenterItem.button?.action = #selector(toggleControlCenter)
+        controlCenterItem.button?.image = controlCenterMenuBarImage()
 
         batteryItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         batteryItem.button?.target = self
@@ -109,11 +123,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.contentViewController = host
     }
 
+    @objc private func toggleControlCenter() { toggle(controlCenterPopover, item: controlCenterItem) }
     @objc private func toggleBattery() { toggle(batteryPopover, item: batteryItem) }
     @objc private func toggleNetwork() { toggle(networkPopover, item: networkItem) }
     @objc private func toggleCPU() { toggle(cpuPopover, item: cpuItem) }
     @objc private func toggleMemory() { toggle(memoryPopover, item: memoryItem) }
     @objc private func toggleBluetooth() { toggle(bluetoothPopover, item: bluetoothItem) }
+
+    /// Opens a metric's detail popover from the Control Center overview. Anchors to that metric's
+    /// own menu-bar item when it's visible, otherwise to the Control Center button — so tapping a
+    /// row works even for an item the user has hidden. Mirrors `toggle`'s single-popover + activate
+    /// sequencing so the opened popover is focused and every other one is closed cleanly.
+    private func presentDetail(_ metric: StatMetric) {
+        let popover: NSPopover
+        let ownItem: NSStatusItem?
+        switch metric {
+        case .battery:   popover = batteryPopover;   ownItem = batteryItem
+        case .cpu:       popover = cpuPopover;       ownItem = cpuItem
+        case .memory:    popover = memoryPopover;    ownItem = memoryItem
+        case .network:   popover = networkPopover;   ownItem = networkItem
+        case .bluetooth: popover = bluetoothPopover; ownItem = bluetoothItem
+        }
+        let anchor = (ownItem?.isVisible == true ? ownItem : controlCenterItem)
+        guard let button = anchor?.button else { return }
+
+        for other in allPopovers where other !== popover { other.performClose(nil) }
+        if #available(macOS 14.0, *) { NSApp.activate() } else { NSApp.activate(ignoringOtherApps: true) }
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        DispatchQueue.main.async {
+            popover.contentViewController?.view.window?.makeKey()
+        }
+    }
 
     private func toggle(_ popover: NSPopover, item: NSStatusItem) {
         if popover.isShown {
@@ -141,11 +181,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func refreshLabels() {
+        // Per-item visibility, driven by the Control Center's "show<Item>Item" toggles. Read the
+        // same lenient way as the battery glyph flags (absent key ⇒ shown) so a fresh install shows
+        // every item. Setting isVisible is a no-op when unchanged; doing it here makes a toggle
+        // take effect within ~1 s. The Control Center item itself is never hidden.
+        setVisibility(batteryItem, key: "showBatteryItem")
+        setVisibility(cpuItem, key: "showCPUItem")
+        setVisibility(memoryItem, key: "showMemoryItem")
+        setVisibility(networkItem, key: "showNetworkItem")
+        setVisibility(bluetoothItem, key: "showBluetoothItem")
+
         batteryItem?.button?.image = currentBatteryImage()
         cpuItem?.button?.image = cpuMenuBarImage(percent: Int(cpuReader.info.usagePercent.rounded()))
         memoryItem?.button?.image = memoryMenuBarImage(percent: Int(memoryReader.info.usagePercent.rounded()))
         networkItem?.button?.image = networkMenuBarImage(up: networkReader.info.uploadRate,
                                                          down: networkReader.info.downloadRate)
+    }
+
+    /// Show/hide a status item from its UserDefaults toggle (absent key ⇒ shown). We intentionally do
+    /// NOT close a hidden item's popover here: the Control Center overview deliberately opens a hidden
+    /// metric's detail anchored to the hub button (see presentDetail), and closing it on the next 1 Hz
+    /// tick would defeat that. A hide never coincides with the item's own tab popover being open — the
+    /// single-popover rule closes it the moment the Control Center opens — so there's nothing to close.
+    private func setVisibility(_ item: NSStatusItem?, key: String) {
+        item?.isVisible = UserDefaults.standard.object(forKey: key) as? Bool ?? true
     }
 
     /// Rebuilds the battery glyph, mirroring the old MenuBarLabel logic: a combined Mac+phone glyph
