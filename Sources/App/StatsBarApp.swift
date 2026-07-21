@@ -22,6 +22,7 @@
 import SwiftUI
 import AppKit
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     // Readers live here (not as @StateObject on the App) since the status items, not a SwiftUI
     // scene, own the UI now. They keep polling for the whole app lifetime.
@@ -114,7 +115,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                   staticImage: bluetoothMenuBarImage())
 
         refreshLabels()
-        let t = Timer(timeInterval: 1, repeats: true) { [weak self] _ in self?.refreshLabels() }
+        // The timer is added to RunLoop.main below, so its closure always fires on the main thread —
+        // assert that to the compiler so the @MainActor refreshLabels() call is warning-free.
+        let t = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshLabels() }
+        }
         RunLoop.main.add(t, forMode: .common)
         labelTimer = t
 
