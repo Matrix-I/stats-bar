@@ -143,12 +143,6 @@ struct BatteryDetailView: View {
                 }
             }
 
-            // 🧠 Live RAM breakdown (App / Wired / Compressed / Free + swap) — pinned right below
-            // the fans, above the battery readout. nil only if the VM stats read fails.
-            if let mem = i.memory {
-                MacMemorySection(mem: mem)
-            }
-
             // Header — the "🔋 Battery" title is centred on the line; the device name and the
             // show-more toggle are anchored to the trailing edge, overlaid on the same row (same
             // centred-title / right-aligned-control layout SectionCaption uses).

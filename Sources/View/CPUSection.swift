@@ -29,7 +29,7 @@ struct CPUDetailView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("CPU")
-                .font(.headline)
+                .font(.system(size: 19.5, weight: .semibold))
                 .frame(maxWidth: .infinity, alignment: .center)
 
             rings
