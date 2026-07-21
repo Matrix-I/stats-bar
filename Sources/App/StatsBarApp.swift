@@ -29,15 +29,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let androidReader = AndroidDeviceReader()
     private let networkReader = NetworkReader()
     private let cpuReader = CPUReader()
+    private let bluetoothReader = BluetoothReader()
 
     private var batteryItem: NSStatusItem!
     private var networkItem: NSStatusItem!
     private var cpuItem: NSStatusItem!
+    private var bluetoothItem: NSStatusItem!
     private let batteryPopover = NSPopover()
     private let networkPopover = NSPopover()
     private let cpuPopover = NSPopover()
+    private let bluetoothPopover = NSPopover()
 
-    private var allPopovers: [NSPopover] { [batteryPopover, networkPopover, cpuPopover] }
+    private var allPopovers: [NSPopover] { [batteryPopover, networkPopover, cpuPopover, bluetoothPopover] }
 
     /// Refreshes the two status-item glyphs ~1 Hz (cheap to rebuild; the readers update at that rate
     /// anyway). Also the hook for menu-bar toggle changes to take effect within a second.
@@ -53,6 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                   root: BatteryDetailView(reader: batteryReader, iosReader: iosReader, androidReader: androidReader))
         configure(popover: networkPopover, root: NetworkDetailView(reader: networkReader))
         configure(popover: cpuPopover, root: CPUDetailView(reader: cpuReader))
+        configure(popover: bluetoothPopover, root: BluetoothDetailView(reader: bluetoothReader))
 
         batteryItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         batteryItem.button?.target = self
@@ -65,6 +69,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         networkItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         networkItem.button?.target = self
         networkItem.button?.action = #selector(toggleNetwork)
+
+        bluetoothItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        bluetoothItem.button?.target = self
+        bluetoothItem.button?.action = #selector(toggleBluetooth)
+        // The Bluetooth glyph is static (no live number to track), so set it once here rather than
+        // rebuilding it every second in refreshLabels.
+        bluetoothItem.button?.image = bluetoothMenuBarImage()
 
         refreshLabels()
         let t = Timer(timeInterval: 1, repeats: true) { [weak self] _ in self?.refreshLabels() }
@@ -93,6 +104,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleBattery() { toggle(batteryPopover, item: batteryItem) }
     @objc private func toggleNetwork() { toggle(networkPopover, item: networkItem) }
     @objc private func toggleCPU() { toggle(cpuPopover, item: cpuItem) }
+    @objc private func toggleBluetooth() { toggle(bluetoothPopover, item: bluetoothItem) }
 
     private func toggle(_ popover: NSPopover, item: NSStatusItem) {
         if popover.isShown {

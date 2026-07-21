@@ -173,6 +173,43 @@ func cpuMenuBarImage(percent: Int) -> NSImage {
     return img
 }
 
+/// Bluetooth menu-bar glyph: the Bluetooth rune drawn as a resolution-independent **template**
+/// NSImage (so the system tints it white-on-dark / black-on-light like the battery and CPU glyphs).
+/// SF Symbols ships no Bluetooth mark — the logo is a trademarked bind-rune — so we stroke it
+/// ourselves. The rune is the two long diagonals crossing at the centre, the vertical spine, and the
+/// two short connectors from the spine's tips out to the right-hand peaks; the diagonals run through
+/// the centre so tick→peak is a single straight segment.
+func bluetoothMenuBarImage() -> NSImage {
+    let h: CGFloat = 13
+    let lw: CGFloat = 1.3
+    let hw: CGFloat = 3.1                       // half-width of the rune (spine to peak/tick)
+    let w = hw * 2 + lw + 2                      // + a little breathing room so nothing clips
+
+    let img = NSImage(size: NSSize(width: w, height: h), flipped: false) { _ in
+        let cx = w / 2
+        let top = h - lw / 2, bot = lw / 2
+        let q = (top - bot) / 4
+        let yUp = bot + 3 * q, yDn = bot + q     // upper / lower band heights
+        let left = cx - hw, right = cx + hw
+
+        let p = NSBezierPath()
+        p.move(to: NSPoint(x: left, y: yUp))     // upper-left tick
+        p.line(to: NSPoint(x: right, y: yDn))    // → lower-right peak (through the centre)
+        p.line(to: NSPoint(x: cx, y: bot))       // → bottom of the spine
+        p.line(to: NSPoint(x: cx, y: top))       // → up the spine to the top
+        p.line(to: NSPoint(x: right, y: yUp))    // → upper-right peak
+        p.line(to: NSPoint(x: left, y: yDn))     // → lower-left tick (through the centre)
+        p.lineWidth = lw
+        p.lineJoinStyle = .round
+        p.lineCapStyle = .round
+        NSColor.black.setStroke()                // colour ignored for a template; only alpha matters
+        p.stroke()
+        return true
+    }
+    img.isTemplate = true
+    return img
+}
+
 /// Short bytes/sec for the menu bar — one significant decimal from KB up, so the label stays narrow.
 private func menuBarRate(_ bytesPerSec: Double) -> String {
     let v = max(0, bytesPerSec)
