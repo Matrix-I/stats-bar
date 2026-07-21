@@ -29,18 +29,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let androidReader = AndroidDeviceReader()
     private let networkReader = NetworkReader()
     private let cpuReader = CPUReader()
+    private let memoryReader = MemoryReader()
     private let bluetoothReader = BluetoothReader()
 
     private var batteryItem: NSStatusItem!
     private var networkItem: NSStatusItem!
     private var cpuItem: NSStatusItem!
+    private var memoryItem: NSStatusItem!
     private var bluetoothItem: NSStatusItem!
     private let batteryPopover = NSPopover()
     private let networkPopover = NSPopover()
     private let cpuPopover = NSPopover()
+    private let memoryPopover = NSPopover()
     private let bluetoothPopover = NSPopover()
 
-    private var allPopovers: [NSPopover] { [batteryPopover, networkPopover, cpuPopover, bluetoothPopover] }
+    private var allPopovers: [NSPopover] { [batteryPopover, networkPopover, cpuPopover, memoryPopover, bluetoothPopover] }
 
     /// Refreshes the two status-item glyphs ~1 Hz (cheap to rebuild; the readers update at that rate
     /// anyway). Also the hook for menu-bar toggle changes to take effect within a second.
@@ -56,6 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                   root: BatteryDetailView(reader: batteryReader, iosReader: iosReader, androidReader: androidReader))
         configure(popover: networkPopover, root: NetworkDetailView(reader: networkReader))
         configure(popover: cpuPopover, root: CPUDetailView(reader: cpuReader))
+        configure(popover: memoryPopover, root: MemoryDetailView(reader: memoryReader))
         configure(popover: bluetoothPopover, root: BluetoothDetailView(reader: bluetoothReader))
 
         batteryItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -65,6 +69,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         cpuItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         cpuItem.button?.target = self
         cpuItem.button?.action = #selector(toggleCPU)
+
+        memoryItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        memoryItem.button?.target = self
+        memoryItem.button?.action = #selector(toggleMemory)
 
         networkItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         networkItem.button?.target = self
@@ -104,6 +112,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleBattery() { toggle(batteryPopover, item: batteryItem) }
     @objc private func toggleNetwork() { toggle(networkPopover, item: networkItem) }
     @objc private func toggleCPU() { toggle(cpuPopover, item: cpuItem) }
+    @objc private func toggleMemory() { toggle(memoryPopover, item: memoryItem) }
     @objc private func toggleBluetooth() { toggle(bluetoothPopover, item: bluetoothItem) }
 
     private func toggle(_ popover: NSPopover, item: NSStatusItem) {
@@ -134,6 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func refreshLabels() {
         batteryItem?.button?.image = currentBatteryImage()
         cpuItem?.button?.image = cpuMenuBarImage(percent: Int(cpuReader.info.usagePercent.rounded()))
+        memoryItem?.button?.image = memoryMenuBarImage(percent: Int(memoryReader.info.usagePercent.rounded()))
         networkItem?.button?.image = networkMenuBarImage(up: networkReader.info.uploadRate,
                                                          down: networkReader.info.downloadRate)
     }

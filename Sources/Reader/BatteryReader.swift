@@ -120,9 +120,6 @@ final class BatteryReader: ObservableObject {
         // Live fan speeds — same SMC user client, also ~1 Hz.
         i.fans = smc.readFans()
 
-        // Live RAM + swap usage (Mach VM statistics — independent of the SMC / battery gauge).
-        i.memory = MemoryStats.read()
-
         // macOS's own "Maximum Capacity" — refreshed at most every few minutes, off the main
         // thread (see the note on the cache fields above). Publish the last value we have.
         maybeReadMaximumCapacity()

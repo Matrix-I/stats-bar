@@ -37,10 +37,6 @@ struct BatteryInfo {
     // when SMC is unavailable.
     var fans: [Double] = []
 
-    // Live physical-RAM + swap usage (~1 Hz, from the Mach VM statistics — see MemoryStats).
-    // nil only if the VM stats read fails, which is effectively never on a real Mac.
-    var memory: MemoryInfo? = nil
-
     /// Whether the menu-bar glyph should show the charging bolt. `isCharging` alone drops
     /// to false the instant the battery reaches 100% (or while it's held at a charge limit
     /// by battery-health management) even though the charger is still connected and DC power
