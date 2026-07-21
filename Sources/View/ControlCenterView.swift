@@ -198,19 +198,18 @@ struct ControlCenterView: View {
 
     // MARK: Actions
 
-    private func refreshAll() {
-        battery.refresh(); cpu.refresh(); memory.refresh(); network.refresh(); bluetooth.refresh()
-    }
+    /// The five overview readers seen through their shared control surface, so Refresh and the
+    /// panel-open forwarding below drive them in one loop instead of naming each by hand. (Reading
+    /// each reader's typed `.info` still goes through the @ObservedObject properties above.)
+    private var readers: [any MetricReader] { [battery, cpu, memory, network, bluetooth] }
+
+    private func refreshAll() { readers.forEach { $0.refresh() } }
 
     /// Forward the popover's visibility to every reader so they poll live while it's open (and drop
     /// back to their idle cadence when it closes). Bluetooth only polls while a panel is open, so
     /// this is what keeps its device count current in the overview.
     private func setPanelOpen(_ open: Bool) {
-        battery.setPanelOpen(open)
-        cpu.setPanelOpen(open)
-        memory.setPanelOpen(open)
-        network.setPanelOpen(open)
-        bluetooth.setPanelOpen(open)
+        readers.forEach { $0.setPanelOpen(open) }
     }
 }
 
