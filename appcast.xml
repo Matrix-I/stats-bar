@@ -7,15 +7,6 @@
     <language>en</language>
     <!-- APPCAST_ITEMS: update_appcast.sh prepends each release's <item> immediately below this line. -->
     <item>
-      <title>Version 2.5.1</title>
-      <pubDate>Tue, 21 Jul 2026 23:57:45 +0700</pubDate>
-      <sparkle:version>2.5.1</sparkle:version>
-      <sparkle:shortVersionString>2.5.1</sparkle:shortVersionString>
-      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-      <sparkle:releaseNotesLink>https://github.com/Matrix-I/stats-bar/releases/tag/v2.5.0</sparkle:releaseNotesLink>
-      <enclosure url="https://github.com/Matrix-I/stats-bar/releases/download/v2.5.0/StatsBar-v2.5.0.dmg" sparkle:edSignature="3/7c5tQq96VgBIWLJDchiN2CW4Ae6Idx8fwykJ+tXIZzjMjL592qEQgxpwkC5tDFkYOR5auDx4AFyW46oP5eDg==" length="2375825" type="application/octet-stream" />
-    </item>
-    <item>
       <title>Version 2.5.0</title>
       <pubDate>Tue, 21 Jul 2026 23:52:15 +0700</pubDate>
       <sparkle:version>2.5.0</sparkle:version>
