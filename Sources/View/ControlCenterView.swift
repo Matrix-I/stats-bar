@@ -69,23 +69,15 @@ struct ControlCenterView: View {
             menuBarToggles
 
             SectionCaption("GENERAL")
-            Toggle("Launch at login", isOn: Binding(
+            switchRow("Launch at login", isOn: Binding(
                 get: { LoginItem.isEnabled },
                 set: { LoginItem.setEnabled($0) }
             ))
-            .font(.system(size: 13))
-            .toggleStyle(.switch)
-            .controlSize(.small)
-            .tint(.green)
 
-            Toggle("Automatically check for updates", isOn: Binding(
+            switchRow("Automatically check for updates", isOn: Binding(
                 get: { updater.automaticallyChecks },
                 set: { updater.automaticallyChecks = $0 }
             ))
-            .font(.system(size: 13))
-            .toggleStyle(.switch)
-            .controlSize(.small)
-            .tint(.green)
 
             Button(action: checkForUpdates) {
                 Text("Check for updates…").font(.system(size: 13))
@@ -139,16 +131,27 @@ struct ControlCenterView: View {
 
     private var menuBarToggles: some View {
         VStack(spacing: 4) {
-            Toggle("Battery", isOn: $showBattery)
-            Toggle("CPU", isOn: $showCPU)
-            Toggle("RAM", isOn: $showMemory)
-            Toggle("Network", isOn: $showNetwork)
-            Toggle("Bluetooth", isOn: $showBluetooth)
+            switchRow("Battery", isOn: $showBattery)
+            switchRow("CPU", isOn: $showCPU)
+            switchRow("RAM", isOn: $showMemory)
+            switchRow("Network", isOn: $showNetwork)
+            switchRow("Bluetooth", isOn: $showBluetooth)
         }
-        .font(.system(size: 13))
-        .toggleStyle(.switch)
-        .controlSize(.small)
-        .tint(.green)
+    }
+
+    /// A settings row: label on the left, switch pushed to the right edge (Spacer between), so a
+    /// column of switches aligns down the right regardless of label width — matching the overview
+    /// rows, whose values are right-aligned the same way. Used for both settings sections.
+    private func switchRow(_ label: String, isOn: Binding<Bool>) -> some View {
+        HStack {
+            Text(label).font(.system(size: 13))
+            Spacer(minLength: 12)
+            Toggle(label, isOn: isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .tint(.green)
+        }
     }
 
     // MARK: Derived overview values
