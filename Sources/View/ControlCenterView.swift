@@ -17,8 +17,9 @@
 import SwiftUI
 import AppKit
 
-/// The metrics the overview can open. AppDelegate maps each to its popover + anchor button.
-enum StatMetric { case battery, cpu, memory, network, bluetooth }
+/// The metrics the overview can open. AppDelegate maps each to its popover + anchor button, and
+/// iterates `allCases` (declaration order = menu-bar order) to build and refresh the items.
+enum StatMetric: CaseIterable { case battery, cpu, memory, network, bluetooth }
 
 struct ControlCenterView: View {
     @ObservedObject var battery: BatteryReader
