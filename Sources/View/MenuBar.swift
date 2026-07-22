@@ -224,7 +224,9 @@ func controlCenterMenuBarImage() -> NSImage {
 }
 
 /// Short bytes/sec for the menu bar — one significant decimal from KB up, so the label stays narrow.
-private func menuBarRate(_ bytesPerSec: Double) -> String {
+/// Not private: AppDelegate builds the network glyph's cache key from these formatted strings, so it
+/// rebuilds the image only when the displayed text changes (not on every sub-unit rate wobble).
+func menuBarRate(_ bytesPerSec: Double) -> String {
     let v = max(0, bytesPerSec)
     if v < 1000 { return String(format: "%.0f B/s", v) }
     let kb = v / 1000

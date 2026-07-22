@@ -36,14 +36,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let updater = Updater()
 
     /// One toggleable metric's menu-bar item: its status item, its detail popover, the UserDefaults
-    /// key that shows/hides it, and — for the items whose glyph carries a live number — a builder
-    /// that rebuilds that glyph each ~1 Hz tick. `liveImage` is nil for a static glyph (Bluetooth),
-    /// which is set once at creation instead.
+    /// key that shows/hides it, and — for the items whose glyph carries a live number — a builder for
+    /// that glyph. `glyph` returns a cheap cache key describing the current inputs plus a thunk that
+    /// renders the NSImage; refreshLabels renders only when the key changed (the builders do real CG
+    /// drawing + SF Symbol loads) and skips the probe entirely for a hidden item. `glyph` is nil for a
+    /// static glyph (Bluetooth), which is set once at creation instead.
     private struct MetricItem {
         let statusItem: NSStatusItem
         let popover: NSPopover
         let visibilityKey: String
-        let liveImage: (() -> NSImage?)?
+        let glyph: (() -> (key: String, render: () -> NSImage)?)?
     }
 
     /// A retained target for an NSControl's target/action that forwards to a Swift closure. NSControl
@@ -60,6 +62,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// selector each. The Control Center is kept separate — it's never hidden and its glyph is static.
     private var metricItems: [StatMetric: MetricItem] = [:]
     private var buttonActions: [ButtonAction] = []
+
+    /// Last glyph cache key per metric, so refreshLabels rebuilds a status-item image only when its
+    /// inputs actually change instead of every ~1 Hz tick. Main-thread only (refreshLabels runs on
+    /// RunLoop.main). An entry exists iff the current button.image was rendered from that key, so a
+    /// hidden→shown item whose value never moved keeps its already-correct image without a rebuild.
+    private var lastGlyphKey: [StatMetric: String] = [:]
 
     private var controlCenterItem: NSStatusItem!
     private let controlCenterPopover = NSPopover()
@@ -103,16 +111,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Bluetooth glyph is static, so it's passed as a one-shot image with no live builder.
         addMetric(.battery, key: "showBatteryItem",
                   root: BatteryDetailView(reader: batteryReader, iosReader: iosReader, androidReader: androidReader),
-                  liveImage: { [weak self] in self?.currentBatteryImage() })
+                  glyph: { [weak self] in self?.batteryGlyph() })
         addMetric(.cpu, key: "showCPUItem",
                   root: CPUDetailView(reader: cpuReader),
-                  liveImage: { [weak self] in self.map { symbolPercentMenuBarImage(symbol: "cpu", percent: Int($0.cpuReader.info.usagePercent.rounded())) } })
+                  glyph: { [weak self] in self.map { s in
+                      let pct = Int(s.cpuReader.info.usagePercent.rounded())
+                      return ("\(pct)", { symbolPercentMenuBarImage(symbol: "cpu", percent: pct) })
+                  } })
         addMetric(.memory, key: "showMemoryItem",
                   root: MemoryDetailView(reader: memoryReader),
-                  liveImage: { [weak self] in self.map { symbolPercentMenuBarImage(symbol: "memorychip", percent: Int($0.memoryReader.info.usagePercent.rounded())) } })
+                  glyph: { [weak self] in self.map { s in
+                      let pct = Int(s.memoryReader.info.usagePercent.rounded())
+                      return ("\(pct)", { symbolPercentMenuBarImage(symbol: "memorychip", percent: pct) })
+                  } })
         addMetric(.network, key: "showNetworkItem",
                   root: NetworkDetailView(reader: networkReader),
-                  liveImage: { [weak self] in self.map { networkMenuBarImage(up: $0.networkReader.info.uploadRate, down: $0.networkReader.info.downloadRate) } })
+                  glyph: { [weak self] in self.map { s in
+                      let up = s.networkReader.info.uploadRate, down = s.networkReader.info.downloadRate
+                      // The network glyph bakes its text colour (it can't be a template), so fold the
+                      // appearance into the key — otherwise it wouldn't re-tint on a light/dark switch.
+                      let dark = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+                      let key = "\(dark ? "d" : "l")|\(menuBarRate(up))|\(menuBarRate(down))"
+                      return (key, { networkMenuBarImage(up: up, down: down) })
+                  } })
         addMetric(.bluetooth, key: "showBluetoothItem",
                   root: BluetoothDetailView(reader: bluetoothReader),
                   staticImage: bluetoothMenuBarImage())
@@ -155,12 +176,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Builds one toggleable metric's popover + status item and records it in `metricItems`.
     private func addMetric<Root: View>(_ metric: StatMetric, key: String, root: Root,
                                        staticImage: NSImage? = nil,
-                                       liveImage: (() -> NSImage?)? = nil) {
+                                       glyph: (() -> (key: String, render: () -> NSImage)?)? = nil) {
         let popover = NSPopover()
         configure(popover: popover, root: root)
         let statusItem = makeStatusItem(image: staticImage) { [weak self] in self?.toggleMetric(metric) }
         metricItems[metric] = MetricItem(statusItem: statusItem, popover: popover,
-                                         visibilityKey: key, liveImage: liveImage)
+                                         visibilityKey: key, glyph: glyph)
     }
 
     private func toggleMetric(_ metric: StatMetric) {
@@ -218,40 +239,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // hidden metric's detail anchored to the hub button (see presentDetail), and closing it on the
         // next tick would defeat that. A hide never coincides with the item's own popover being open —
         // the single-popover rule closed it the moment the Control Center opened — so there's nothing
-        // to close. Items with a live glyph (Battery / CPU / RAM / Network) get it rebuilt here; the
-        // static Bluetooth glyph (liveImage == nil) was set once at creation.
+        // to close.
         for metric in StatMetric.allCases {
             guard let m = metricItems[metric] else { continue }
-            m.statusItem.isVisible = UserDefaults.standard.object(forKey: m.visibilityKey) as? Bool ?? true
-            if let image = m.liveImage?() { m.statusItem.button?.image = image }
+            let visible = UserDefaults.standard.object(forKey: m.visibilityKey) as? Bool ?? true
+            m.statusItem.isVisible = visible
+            // A hidden item draws nothing — skip its glyph work entirely (no wasted CG render for a
+            // button nobody sees). A static-glyph item (glyph == nil, i.e. Bluetooth) had its image
+            // set once at creation. Otherwise probe the cheap key and re-render + reassign only when
+            // the inputs changed, so an unchanged value doesn't rebuild the image every second.
+            guard visible, let probe = m.glyph, let (key, render) = probe() else { continue }
+            if lastGlyphKey[metric] != key {
+                m.statusItem.button?.image = render()
+                lastGlyphKey[metric] = key
+            }
         }
     }
 
-    /// Rebuilds the battery glyph, mirroring the old MenuBarLabel logic: a combined Mac+phone glyph
-    /// when the iPhone/Android menu-bar toggle is on and a device is readable, otherwise the plain
-    /// Mac battery. iPhone wins over Android when both are present, to keep the item from growing a
-    /// third glyph.
-    private func currentBatteryImage() -> NSImage {
+    /// The battery status-item glyph, mirroring the old MenuBarLabel logic: a combined Mac+phone glyph
+    /// when the iPhone/Android menu-bar toggle is on and a device is readable, otherwise the plain Mac
+    /// battery. iPhone wins over Android when both are present, to keep the item from growing a third
+    /// glyph. Returns a cache key over the visible inputs plus a render thunk, so refreshLabels
+    /// rebuilds the image only when one of those inputs changes rather than every tick.
+    private func batteryGlyph() -> (key: String, render: () -> NSImage) {
         let defaults = UserDefaults.standard
         let showPercent = defaults.object(forKey: "showMenuBarPercent") as? Bool ?? true
         let showIPhone = defaults.bool(forKey: "showIPhoneMenuBar")
         let showAndroid = defaults.bool(forKey: "showAndroidMenuBar")
         let info = batteryReader.info
         let macPct = Int(info.chargePercent.rounded())
+        let pct = showPercent ? 1 : 0
 
         if showIPhone, let ios = iosReader.devices.first, let cp = ios.chargePercent {
-            return dualMenuBarImage(macPct: macPct, macCharging: info.isPluggedIn,
-                                    phonePct: Int(cp.rounded()), phoneCharging: ios.isPluggedIn,
-                                    phoneSymbol: "iphone", showPercent: showPercent)
+            let phonePct = Int(cp.rounded())
+            let key = "ios|\(pct)|\(macPct)|\(info.isPluggedIn ? 1 : 0)|\(phonePct)|\(ios.isPluggedIn ? 1 : 0)"
+            return (key, {
+                dualMenuBarImage(macPct: macPct, macCharging: info.isPluggedIn,
+                                 phonePct: phonePct, phoneCharging: ios.isPluggedIn,
+                                 phoneSymbol: "iphone", showPercent: showPercent)
+            })
         }
         if showAndroid, let android = androidReader.devices.first, let level = android.levelPercent {
-            return dualMenuBarImage(macPct: macPct, macCharging: info.isPluggedIn,
-                                    phonePct: level, phoneCharging: android.isPluggedIn,
-                                    phoneSymbol: "candybarphone", showPercent: showPercent)
+            let key = "android|\(pct)|\(macPct)|\(info.isPluggedIn ? 1 : 0)|\(level)|\(android.isPluggedIn ? 1 : 0)"
+            return (key, {
+                dualMenuBarImage(macPct: macPct, macCharging: info.isPluggedIn,
+                                 phonePct: level, phoneCharging: android.isPluggedIn,
+                                 phoneSymbol: "candybarphone", showPercent: showPercent)
+            })
         }
-        return batteryMenuBarImage(level: info.chargePercent / 100,
-                                   charging: info.isPluggedIn,
-                                   percent: showPercent ? macPct : nil)
+        let key = "mac|\(pct)|\(macPct)|\(info.isPluggedIn ? 1 : 0)"
+        return (key, {
+            batteryMenuBarImage(level: info.chargePercent / 100,
+                                charging: info.isPluggedIn,
+                                percent: showPercent ? macPct : nil)
+        })
     }
 }
 

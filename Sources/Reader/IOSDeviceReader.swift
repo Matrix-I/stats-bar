@@ -15,12 +15,18 @@ final class IOSDeviceReader: ObservableObject {
     private var isBusy = false
     private lazy var poll = PollingTimer { [weak self] in self?.tick() }
 
-    /// Popover visibility, driven by BatteryDetailView (the only view that shows iPhone data). It, the
-    /// iPhone menu-bar glyph, and a currently-connected device (which keeps the hot-battery alerter
-    /// responsive) are what hold the reader at its ~1 Hz cadence; with none of them the reader drops
-    /// to a slow keep-warm — see tick(). Main-thread only.
+    /// Popover visibility, driven by BatteryDetailView (the only view that shows iPhone data). It and
+    /// the iPhone menu-bar glyph are what hold the reader at its full ~1 Hz cadence. A connected phone
+    /// nobody is watching still refreshes — to feed the hot-battery alerter — but only every
+    /// `alerterInterval`, and an idle reader drops to `keepWarmInterval`. See tick(). Main-thread only.
     private var panelOpen = false
     private var lastRefreshAt = Date.distantPast
+    /// Refresh cadence when a phone is connected but off-screen (popover closed, glyph off): frequent
+    /// enough for the thermal nudge (battery temperature drifts slowly, and iOS pauses charging when
+    /// hot on its own), but not the every-second libimobiledevice fork storm that full 1 Hz would be.
+    private static let alerterInterval: TimeInterval = 5
+    /// Refresh cadence when nothing is connected and nobody is watching — just often enough to notice
+    /// a plug-in promptly.
     private static let keepWarmInterval: TimeInterval = 10
 
     /// Whether the previous enumeration found a device. Touched only inside the doRefresh call chain
@@ -30,6 +36,14 @@ final class IOSDeviceReader: ObservableObject {
     /// it just wastes forks and sleeps re-confirming "still nothing". Starts true so a device present
     /// at launch is still caught by the burst; self-adjusts after the first cycle.
     private var sawDeviceLastCycle = true
+
+    /// Per-device identity (name / model / iOS version) keyed by UDID. These are constant for a given
+    /// device but each costs a separate `ideviceinfo` fork, so read them once on first sight and reuse
+    /// them — a steady-state refresh then spends its forks on the battery read, not on re-fetching
+    /// constants. Pruned to the currently-enumerated devices each refresh, so a reconnect (or a device
+    /// that becomes trusted) reads fresh. Touched only inside the doRefresh chain, which the isBusy
+    /// guard serializes (one doRefresh finishes before the next starts), so no locking is needed.
+    private var infoCache: [String: (name: String, model: String, iosVersion: String)] = [:]
 
     /// Warns (macOS notification) when a device's battery runs hot. Touched only on the main thread,
     /// inside publish, so its threshold-crossing state stays single-threaded.
@@ -64,17 +78,23 @@ final class IOSDeviceReader: ObservableObject {
     /// BatteryDetailView); the next fast tick, within ~1 s, refreshes, and the warm cache shows meanwhile.
     func setPanelOpen(_ open: Bool) { panelOpen = open }
 
-    /// The 1 Hz timer's handler. Runs a full refresh() while the popover is open, the iPhone menu-bar
-    /// glyph is enabled (a live phone %, rebuilt ~1 Hz by AppDelegate), OR a device is connected — the
-    /// last because publish() drives TemperatureAlerter, the hot-battery nudge that must stay
-    /// responsive whenever a phone is present, regardless of what's on screen. Only when none of those
-    /// hold (no device, popover closed, glyph off — the common case) does it drop to a slow keep-warm,
-    /// instead of shelling out to libimobiledevice every second for something nothing is watching.
+    /// The 1 Hz timer's handler. Picks the effective cadence from who's actually looking:
+    ///  • popover open, or the iPhone menu-bar glyph on → full 1 Hz (the data is on screen);
+    ///  • otherwise a connected phone → every `alerterInterval`, enough to keep TemperatureAlerter
+    ///    (the hot-battery nudge, driven by publish()) responsive without forking libimobiledevice
+    ///    every second for something off-screen;
+    ///  • nothing connected and nobody watching → `keepWarmInterval`, just to catch a plug-in.
+    /// Dropping a connected-but-unwatched phone from 1 Hz to `alerterInterval` is the big idle-cost win
+    /// (see doRefresh — each refresh forks several libimobiledevice tools).
     private func tick() {
-        let active = panelOpen
-            || !devices.isEmpty
-            || UserDefaults.standard.bool(forKey: "showIPhoneMenuBar")
-        guard active || Date().timeIntervalSince(lastRefreshAt) >= Self.keepWarmInterval else { return }
+        let watched = panelOpen || UserDefaults.standard.bool(forKey: "showIPhoneMenuBar")
+        // On screen (popover open or glyph on) → full 1 Hz, and with NO wall-clock dependence so an
+        // NTP/clock step backwards can't stall the visible readout. Off screen → a relaxed cadence,
+        // clock-gated: a connected phone every alerterInterval, nothing connected every keepWarmInterval.
+        if !watched {
+            let minInterval = devices.isEmpty ? Self.keepWarmInterval : Self.alerterInterval
+            guard Date().timeIntervalSince(lastRefreshAt) >= minInterval else { return }
+        }
         lastRefreshAt = Date()
         refresh()
     }
@@ -182,23 +202,47 @@ final class IOSDeviceReader: ObservableObject {
 
         let devicesList = listDevices(ideviceIdPath)
         guard !devicesList.isEmpty else {
+            infoCache.removeAll()   // nothing on the bus — forget every cached identity
             publish(devices: [], toolsMissing: false,
                     status: "No iPhone/iPad found over USB or Wi-Fi.\nPlug in the cable (unlock + tap Trust), or turn on “Sync over Wi-Fi” in Finder.")
             return
         }
+        // Drop identities for devices no longer enumerated (unplugged, or trust changed), so a
+        // reconnect re-reads them; keyed on the current enumeration, matching how the reader treats
+        // "present" everywhere else.
+        let present = Set(devicesList.map(\.udid))
+        infoCache = infoCache.filter { present.contains($0.key) }
 
         var results: [IOSDeviceInfo] = []
         for (udid, network) in devicesList {
             var dev = IOSDeviceInfo(id: udid)
             dev.isNetwork = network
-            let named = infoValue(ideviceInfoPath, udid: udid, key: "DeviceName", network: network)
-            dev.name = named ?? udid
-            dev.model = infoValue(ideviceInfoPath, udid: udid, key: "ProductType", network: network) ?? ""
-            dev.iosVersion = infoValue(ideviceInfoPath, udid: udid, key: "ProductVersion", network: network) ?? ""
-            // A successful DeviceName read means the lockdown handshake completed, i.e. the device
-            // is paired/trusted. If it failed, the device isn't trusted (or just left the bus) —
-            // a different problem from a merely-locked device, handled separately below.
-            let trusted = named != nil
+            // Identity is constant per device, so read it once and cache it — a steady-state refresh
+            // then skips these three ideviceinfo forks. We cache only a successful read (DeviceName
+            // non-nil), so a cache hit also means the lockdown handshake completed, i.e. the device is
+            // paired/trusted; a miss means we just tried and `named` reflects this cycle's attempt.
+            let trusted: Bool
+            if let cached = infoCache[udid] {
+                dev.name = cached.name
+                dev.model = cached.model
+                dev.iosVersion = cached.iosVersion
+                trusted = true
+            } else {
+                let named = infoValue(ideviceInfoPath, udid: udid, key: "DeviceName", network: network)
+                let model = infoValue(ideviceInfoPath, udid: udid, key: "ProductType", network: network) ?? ""
+                let version = infoValue(ideviceInfoPath, udid: udid, key: "ProductVersion", network: network) ?? ""
+                dev.name = named ?? udid
+                dev.model = model
+                dev.iosVersion = version
+                trusted = named != nil
+                // Cache only a COMPLETE identity: each field is a separate ideviceinfo fork+handshake,
+                // so DeviceName can succeed while ProductType/ProductVersion transiently stall on a
+                // flaky link. Caching those empties would pin a blank model/iOS version until unplug;
+                // requiring all three lets a partial read self-heal on the next tick (as the old
+                // per-tick read did). A trusted device always reports all three, so this keeps the
+                // optimization in practice and just falls back to per-tick reads otherwise.
+                if let named, !model.isEmpty, !version.isEmpty { infoCache[udid] = (named, model, version) }
+            }
 
             if let reg = readBatteryRegistry(diagnosticsPath, udid: udid, network: network) {
                 dev.serial = reg["Serial"] as? String ?? ""
