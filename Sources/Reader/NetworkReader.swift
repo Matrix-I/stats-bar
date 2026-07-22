@@ -44,6 +44,7 @@ final class NetworkReader: NSObject, ObservableObject {
     private static let pingInterval: TimeInterval = 3
     private static let publicIPInterval: TimeInterval = 300
     private static let pingHost = "1.1.1.1"
+    private static let pingHostV6 = "2606:4700:4700::1111"   // Cloudflare — fallback on IPv6-only links
 
     override init() {
         super.init()
@@ -213,7 +214,15 @@ final class NetworkReader: NSObject, ObservableObject {
         isPinging = true
         lastPingAt = DispatchTime.now()
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let result = Pinger.ping(host: Self.pingHost)
+            // IPv4 first (the common case). Only if it gets zero replies — offline, or an IPv6-only
+            // link where the v4 host has no route — fall back to an IPv6 ping, so latency/reachability
+            // still reflect a working IPv6 connection instead of reading dead (primaryInterface()
+            // already falls back to the IPv6 global for exactly these links).
+            var result = Pinger.ping(host: Self.pingHost)
+            if !result.reachable {
+                let v6 = Pinger.ping(host: Self.pingHostV6)
+                if v6.reachable { result = v6 }
+            }
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.info.latencyMs = result.latencyMs
