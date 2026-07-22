@@ -48,7 +48,7 @@ enum PublicIP {
 
         group.notify(queue: .global(qos: .utility)) {
             // Guard against a garbage body being mistaken for a country code (e.g. an HTML error page).
-            let cc = (country?.count == 2 && country!.allSatisfy { $0.isLetter }) ? country : nil
+            let cc = (country?.count == 2 && country!.allSatisfy { $0.isASCII && $0.isLetter }) ? country : nil
             completion(Result(ipv4: ipv4, ipv6: ipv6, countryCode: cc,
                               failed: ipv4 == nil && ipv6 == nil))
         }

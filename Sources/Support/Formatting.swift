@@ -68,7 +68,7 @@ func fmtRateParts(_ bytesPerSec: Double) -> (value: String, unit: String) {
 /// regional-indicator symbol. Returns "" for anything that isn't two letters.
 func flagEmoji(_ code: String) -> String {
     let up = code.uppercased()
-    guard up.count == 2, up.allSatisfy({ $0.isLetter }) else { return "" }
+    guard up.count == 2, up.allSatisfy({ $0.isASCII && $0.isLetter }) else { return "" }
     let base: UInt32 = 0x1F1E6 - 0x41   // regional indicator "A" minus ASCII 'A'
     var s = ""
     for scalar in up.unicodeScalars {

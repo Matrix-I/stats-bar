@@ -176,13 +176,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let m = metricItems[metric] else { return }
         let anchor: NSStatusItem = m.statusItem.isVisible ? m.statusItem : controlCenterItem
         guard let button = anchor.button else { return }
-
-        for other in allPopovers where other !== m.popover { other.performClose(nil) }
-        if #available(macOS 14.0, *) { NSApp.activate() } else { NSApp.activate(ignoringOtherApps: true) }
-        m.popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-        DispatchQueue.main.async {
-            m.popover.contentViewController?.view.window?.makeKey()
-        }
+        present(m.popover, from: button)
     }
 
     private func toggle(_ popover: NSPopover, item: NSStatusItem) {
@@ -190,15 +184,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             popover.performClose(nil)
             return
         }
-        // Single-popover rule — close every other one first, cleanly, so switching stays one-click.
-        for other in allPopovers where other !== popover { other.performClose(nil) }
         guard let button = item.button else { return }
+        present(popover, from: button)
+    }
 
-        // An accessory app isn't the active app, so a freshly shown popover opens *unfocused* — its
-        // controls wouldn't respond until you clicked into it. Activate the app FIRST (before show,
-        // using the cooperative-activation API on macOS 14+ where the ignoringOtherApps variant is
-        // deprecated and unreliable), then show, then key the popover window on the next run-loop
-        // turn — by then activation has taken effect, so makeKey() actually sticks.
+    /// The one authoritative popover-presentation sequence, shared by `toggle` and `presentDetail`.
+    /// The ordering is load-bearing: an accessory app isn't the active app, so a freshly shown
+    /// popover opens *unfocused* — its controls wouldn't respond until you clicked into it. So it
+    /// closes every other popover first (the single-popover rule keeps switching one-click), then
+    /// activates the app FIRST — before show, using the cooperative-activation API on macOS 14+ where
+    /// the ignoringOtherApps variant is deprecated and unreliable — then shows, then keys the popover
+    /// window on the next run-loop turn, by which point activation has taken effect so makeKey() sticks.
+    private func present(_ popover: NSPopover, from button: NSStatusBarButton) {
+        for other in allPopovers where other !== popover { other.performClose(nil) }
         if #available(macOS 14.0, *) { NSApp.activate() } else { NSApp.activate(ignoringOtherApps: true) }
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         DispatchQueue.main.async {
