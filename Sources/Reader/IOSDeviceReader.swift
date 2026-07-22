@@ -13,7 +13,15 @@ final class IOSDeviceReader: ObservableObject {
 
     /// Only accessed/mutated on the main thread — refresh() is always called from main (button, onAppear, timer).
     private var isBusy = false
-    private lazy var poll = PollingTimer { [weak self] in self?.refresh() }
+    private lazy var poll = PollingTimer { [weak self] in self?.tick() }
+
+    /// Popover visibility, driven by BatteryDetailView (the only view that shows iPhone data). It, the
+    /// iPhone menu-bar glyph, and a currently-connected device (which keeps the hot-battery alerter
+    /// responsive) are what hold the reader at its ~1 Hz cadence; with none of them the reader drops
+    /// to a slow keep-warm — see tick(). Main-thread only.
+    private var panelOpen = false
+    private var lastRefreshAt = Date.distantPast
+    private static let keepWarmInterval: TimeInterval = 10
 
     /// Whether the previous enumeration found a device. Touched only inside the doRefresh call chain
     /// (listDevices), which the isBusy guard serializes — one doRefresh finishes before the next
@@ -49,6 +57,26 @@ final class IOSDeviceReader: ObservableObject {
         // subprocesses + USB round-trips), but refresh()'s isBusy guard drops any tick that lands
         // while the previous read is still running, so a slow cycle just lowers the effective rate.
         poll.schedule(every: 1)
+    }
+
+    /// Called by BatteryDetailView's visibility reporter. We deliberately do NOT force a read on open
+    /// (a slow libimobiledevice read landing mid-animation would snap it — see the note in
+    /// BatteryDetailView); the next fast tick, within ~1 s, refreshes, and the warm cache shows meanwhile.
+    func setPanelOpen(_ open: Bool) { panelOpen = open }
+
+    /// The 1 Hz timer's handler. Runs a full refresh() while the popover is open, the iPhone menu-bar
+    /// glyph is enabled (a live phone %, rebuilt ~1 Hz by AppDelegate), OR a device is connected — the
+    /// last because publish() drives TemperatureAlerter, the hot-battery nudge that must stay
+    /// responsive whenever a phone is present, regardless of what's on screen. Only when none of those
+    /// hold (no device, popover closed, glyph off — the common case) does it drop to a slow keep-warm,
+    /// instead of shelling out to libimobiledevice every second for something nothing is watching.
+    private func tick() {
+        let active = panelOpen
+            || !devices.isEmpty
+            || UserDefaults.standard.bool(forKey: "showIPhoneMenuBar")
+        guard active || Date().timeIntervalSince(lastRefreshAt) >= Self.keepWarmInterval else { return }
+        lastRefreshAt = Date()
+        refresh()
     }
 
     func refresh() {

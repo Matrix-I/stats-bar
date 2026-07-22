@@ -116,11 +116,14 @@ struct BatteryDetailView: View {
         .background(WindowVisibilityReporter(
             onChange: { open in
                 reader.setPanelOpen(open)
-                // No forced iOS/Android read on open. Those readers already poll continuously in the
-                // background (their 1 s timers run whether the panel is open or not), so `devices` is
-                // always warm — opening just DISPLAYS the cached data. A fresh on-open read would come
-                // back at an unpredictable moment (libimobiledevice is slow) and, if it landed while the
-                // user is expanding a section, snap the animation. The Refresh button still forces a read.
+                // Tell the phone readers this popover (their only consumer) is open, so they poll at
+                // ~1 Hz while it's visible and drop to a slow keep-warm when it's closed and the phone
+                // menu-bar glyph is off. We deliberately do NOT force a read on open here: a slow
+                // libimobiledevice/adb read landing at an unpredictable moment could snap a section's
+                // expand animation, so the cache is shown immediately and the next ~1 Hz tick refreshes.
+                // The Refresh button still forces a read.
+                iosReader.setPanelOpen(open)
+                androidReader.setPanelOpen(open)
             },
             onScreenHeight: { h in if h > 0 { panelScreenHeight = h } }
         ))

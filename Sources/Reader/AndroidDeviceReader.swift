@@ -28,7 +28,14 @@ final class AndroidDeviceReader: ObservableObject {
     @Published var statusMessage: String?
 
     private var isBusy = false
-    private lazy var poll = PollingTimer { [weak self] in self?.refresh() }
+    private lazy var poll = PollingTimer { [weak self] in self?.tick() }
+
+    /// Popover visibility, driven by BatteryDetailView (the only view that shows Android data). While
+    /// the popover is closed AND the Android menu-bar glyph is off, nothing consumes `devices`, so the
+    /// reader drops from its ~1 Hz cadence to a slow keep-warm — see tick(). Main-thread only.
+    private var panelOpen = false
+    private var lastRefreshAt = Date.distantPast
+    private static let keepWarmInterval: TimeInterval = 10
 
     /// Cache of the most recently read devices (only touched on the main thread, inside publish) —
     /// keeps showing data across a brief USB drop instead of the device "vanishing".
@@ -52,6 +59,21 @@ final class AndroidDeviceReader: ObservableObject {
     init() {
         refresh()
         poll.schedule(every: 1)
+    }
+
+    /// Called by BatteryDetailView's visibility reporter. Like the iOS reader, no forced read on open
+    /// — the next fast tick (within ~1 s) refreshes and the warm cache shows meanwhile.
+    func setPanelOpen(_ open: Bool) { panelOpen = open }
+
+    /// The 1 Hz timer's handler. Runs a full refresh() while the popover is open OR the Android
+    /// menu-bar glyph is enabled (it shows a live phone %, rebuilt ~1 Hz by AppDelegate). Otherwise it
+    /// merely keeps the cache warm on a slow cadence, so opening the popover still shows recent data
+    /// instead of shelling out to adb every second for something nobody is looking at.
+    private func tick() {
+        let active = panelOpen || UserDefaults.standard.bool(forKey: "showAndroidMenuBar")
+        guard active || Date().timeIntervalSince(lastRefreshAt) >= Self.keepWarmInterval else { return }
+        lastRefreshAt = Date()
+        refresh()
     }
 
     func refresh() {
