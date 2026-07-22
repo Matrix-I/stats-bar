@@ -166,9 +166,12 @@ final class BatteryReader: ObservableObject {
             i.fans = smc.readFans()
         }
 
-        // macOS's own "Maximum Capacity" — refreshed at most every few minutes, off the main
-        // thread (see the note on the cache fields above). Publish the last value we have.
-        maybeReadMaximumCapacity()
+        // macOS's own "Maximum Capacity" is a detail-panel-only figure (the menu-bar glyph never
+        // shows battery health) and each refresh forks system_profiler, so only fetch it while the
+        // popover is open — same popover-gating as the SMC rails above. The cached value is still
+        // published unconditionally, so the panel shows the last-known figure immediately on open
+        // while a fresh read lands a moment later.
+        if panelOpen { maybeReadMaximumCapacity() }
         i.maximumCapacityPercent = cachedMaxCapacity
 
         // refresh() only ever runs on the main thread (init / setPanelOpen / the main-run-loop poll),
