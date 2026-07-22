@@ -273,6 +273,14 @@ final class SimpleUpdateUserDriver: NSObject, SPUUserDriver {
 
     func showUpdateFound(with appcastItem: SUAppcastItem, state: SPUUserUpdateState,
                          reply: @escaping (SPUUserUpdateChoice) -> Void) {
+        // An information-only update carries no installable enclosure; Sparkle's SPUUserDriver contract
+        // forbids replying .install for it. Point the user at its info page (only on a check they
+        // started — a background check stays silent) and dismiss, instead of offering an Install button.
+        if appcastItem.isInformationOnlyUpdate {
+            if userInitiated, let info = appcastItem.infoURL { NSWorkspace.shared.open(info) }
+            reply(.dismiss)
+            return
+        }
         clearHandlers()
         updateReply = reply
 
@@ -327,6 +335,11 @@ final class SimpleUpdateUserDriver: NSObject, SPUUserDriver {
     }
 
     func showDownloadDidReceiveExpectedContentLength(_ expectedContentLength: UInt64) {
+        // Sparkle may call this more than once for one download, sometimes with a corrected length.
+        // Restart the received-bytes tally when the total actually changes, so the fraction doesn't
+        // stay pinned at 100% (or a stale ratio) against the new total — but only on a real change, so
+        // a repeated same-value report doesn't bounce the bar back to 0%.
+        if expectedContentLength != expectedLength { receivedLength = 0 }
         expectedLength = expectedContentLength
     }
 
