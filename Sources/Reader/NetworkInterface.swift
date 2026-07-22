@@ -102,14 +102,19 @@ enum NetworkInterface {
         return sa.withMemoryRebound(to: sockaddr_dl.self, capacity: 1) { dl -> String? in
             let len = Int(dl.pointee.sdl_alen)
             guard len == 6 else { return nil }
-            // The address bytes follow the interface name inside sdl_data; sdl_nlen is that name's
-            // length, so the hardware address starts sdl_nlen bytes in.
+            // The MAC bytes live inside the variable-length sockaddr_dl: sdl_nlen bytes into sdl_data,
+            // which itself sits at a fixed offset in the struct. Read them from the struct base as raw
+            // bytes rather than taking the address of the fixed 12-element sdl_data tuple and indexing
+            // past it — those bytes physically exist in the larger block getifaddrs allocated (sdl_len
+            // covers name + address), but reading beyond the tuple's own storage is undefined behavior.
             let nlen = Int(dl.pointee.sdl_nlen)
-            return withUnsafePointer(to: &dl.pointee.sdl_data) { dataPtr in
-                dataPtr.withMemoryRebound(to: UInt8.self, capacity: nlen + len) { bytes in
-                    (0..<len).map { String(format: "%02x", bytes[nlen + $0]) }.joined(separator: ":")
-                }
-            }
+            guard let dataOffset = MemoryLayout<sockaddr_dl>.offset(of: \.sdl_data) else { return nil }
+            let start = dataOffset + nlen
+            guard start + len <= Int(dl.pointee.sdl_len) else { return nil }
+            let base = UnsafeRawPointer(dl)
+            return (0..<len)
+                .map { String(format: "%02x", base.load(fromByteOffset: start + $0, as: UInt8.self)) }
+                .joined(separator: ":")
         }
     }
 

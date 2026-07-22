@@ -298,7 +298,9 @@ private struct NetDNSRow: View {
             Text("DNS Server")
             Spacer()
             VStack(alignment: .trailing, spacing: 2) {
-                ForEach(servers, id: \.self) { s in
+                // Index-stable id: ServerAddresses can list the same resolver twice (VPN + base
+                // service pushing identical IPs), and id: \.self would collide on the duplicate.
+                ForEach(Array(servers.enumerated()), id: \.offset) { _, s in
                     Text(s).fontWeight(.medium).monospacedDigit().lineLimit(1)
                 }
             }

@@ -306,20 +306,27 @@ final class IOSDeviceReader: ObservableObject {
                 dev.externalConnected = reg["ExternalConnected"] as? Bool ?? false
                 dev.fullyCharged = reg["FullyCharged"] as? Bool ?? false
                 dev.capturedAt = Date()
-            } else if trusted {
+            } else if trusted, let batt = readBatteryDomain(ideviceInfoPath, udid: udid, network: network) {
                 // Diagnostics relay is refused while the device sits at the passcode lock screen
-                // (lockdownd returns PASSWORD_PROTECTED), so the detailed registry is unreadable.
-                // The device is still here and trusted, though — fall back to the lockdown battery
-                // domain for a live charge %, and let publish() keep the last-known health on
-                // screen (grafted from cache) rather than dropping to an error.
+                // (lockdownd returns PASSWORD_PROTECTED), so the detailed registry is unreadable — but
+                // the device is still paired, so the lockdown battery domain still answers. Show a live
+                // charge % and let publish() keep the last-known health on screen (grafted from cache)
+                // rather than dropping to an error.
                 dev.isLocked = true
-                if let batt = readBatteryDomain(ideviceInfoPath, udid: udid, network: network) {
-                    dev.lockedChargePercent = batt.pct
-                    dev.isCharging = batt.isCharging
-                    dev.externalConnected = batt.external
-                    dev.fullyCharged = batt.full
-                }
+                dev.lockedChargePercent = batt.pct
+                dev.isCharging = batt.isCharging
+                dev.externalConnected = batt.external
+                dev.fullyCharged = batt.full
             } else {
+                // Neither the diagnostics relay nor the lockdown battery domain answered. Both need a
+                // live pairing, so the pairing itself is gone (trust revoked, or the device unpaired
+                // while the cable stayed connected), not just a locked screen. A cache hit had assumed
+                // the device was still trusted; forget that cached identity so the next tick re-reads it
+                // and reclassifies, and surface the trust error instead of a phantom "locked" that would
+                // never clear (the device stays USB-enumerated, so the cache is never pruned by absence).
+                // A momentary domain blip on a genuinely locked device is ridden out by publish()'s
+                // staleGraceUnreadable window, so the error only sticks once the pairing is really gone.
+                infoCache[udid] = nil
                 dev.errorMessage = "Couldn't reach the device — unlock it and tap Trust."
             }
 

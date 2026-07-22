@@ -55,6 +55,12 @@ struct ControlCenterView: View {
     @AppStorage("showNetworkItem")   private var showNetwork = true
     @AppStorage("showBluetoothItem") private var showBluetooth = true
 
+    /// Cached so the "Launch at login" Toggle's Binding.get doesn't call SMAppService.mainApp.status
+    /// (a synchronous ServiceManagement lookup) on every body eval — the hub re-evaluates several
+    /// times a second while open. Seeded once, refreshed when the popover opens (the only moment an
+    /// external change via System Settings ▸ Login Items matters), and written by the setter.
+    @State private var launchAtLogin = LoginItem.isEnabled
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("StatsBar")
@@ -74,8 +80,8 @@ struct ControlCenterView: View {
 
             SectionCaption("GENERAL")
             switchRow("Launch at login", isOn: Binding(
-                get: { LoginItem.isEnabled },
-                set: { LoginItem.setEnabled($0) }
+                get: { launchAtLogin },
+                set: { LoginItem.setEnabled($0); launchAtLogin = $0 }
             ))
 
             switchRow("Automatically check for updates", isOn: Binding(
@@ -100,7 +106,10 @@ struct ControlCenterView: View {
         .padding(14)
         .frame(width: 300)
         .fixedSize(horizontal: false, vertical: true)
-        .background(WindowVisibilityReporter(onChange: setPanelOpen))
+        .background(WindowVisibilityReporter(onChange: { open in
+            if open { launchAtLogin = LoginItem.isEnabled }   // catch an external Login Items change
+            setPanelOpen(open)
+        }))
     }
 
     // MARK: Overview
