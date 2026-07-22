@@ -5,12 +5,19 @@
 import Foundation
 import Combine
 import IOKit
+import IOKit.ps
 
 final class BatteryReader: ObservableObject {
     @Published var info = BatteryInfo()
     private lazy var poll = PollingTimer { [weak self] in self?.refresh() }
     private var panelOpen = false
     private let smc = SMC()
+
+    /// Power-source change notifications (plug/unplug, charging state, charge %) trigger an immediate
+    /// refresh, so the menu-bar glyph reacts at once even though the closed-panel poll is slow — that's
+    /// what lets idleInterval be lazy without the charging bolt / % lagging behind reality. Retained so
+    /// it can be removed in deinit.
+    private var powerSourceMonitor: CFRunLoopSource?
 
     // "Maximum Capacity" (macOS's own battery-health figure — System Information / Battery Health)
     // has no public IOKit key: Apple computes it with a private, smoothed algorithm that no raw
@@ -20,12 +27,38 @@ final class BatteryReader: ObservableObject {
     private var cachedMaxCapacity: Int?
     private lazy var healthRead = ThrottledBackgroundValue<Int?>(label: "BatteryReader.health", every: 300)
 
-    private static let idleInterval: TimeInterval = 1    // refresh every second, even for the menu-bar glyph alone
+    // Closed popover: a slow backstop poll — the full IOKit property-dict read is materialized every
+    // tick, so doing it once a second all day (86,400×) for a glyph whose charge % moves ~once a
+    // minute is wasteful. Power-source notifications (see startPowerSourceMonitor) cover the changes
+    // that actually matter for the glyph, so the poll only needs to catch the rest occasionally.
+    private static let idleInterval: TimeInterval = 10
     private static let activeInterval: TimeInterval = 1  // live readout while the detail panel is open
 
     init() {
         refresh()
         poll.schedule(every: Self.idleInterval)
+        startPowerSourceMonitor()
+    }
+
+    /// Refresh the instant the power source changes (charger plugged/unplugged, charging↔not, a new
+    /// charge %), so the menu-bar glyph stays live between the lazy idle polls. The C callback can't
+    /// capture, so `self` is passed through the context pointer (unretained — BatteryReader lives for
+    /// the whole app run, owned by AppDelegate). The source is added to the main run loop, so the
+    /// callback fires on main and refresh() stays main-thread-only like every other call site.
+    private func startPowerSourceMonitor() {
+        let context = Unmanaged.passUnretained(self).toOpaque()
+        guard let source = IOPSNotificationCreateRunLoopSource({ ctx in
+            guard let ctx else { return }
+            Unmanaged<BatteryReader>.fromOpaque(ctx).takeUnretainedValue().refresh()
+        }, context)?.takeRetainedValue() else { return }
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        powerSourceMonitor = source
+    }
+
+    deinit {
+        if let source = powerSourceMonitor {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
+        }
     }
 
     /// Poll once a second while the detail panel is visible; drop back to the lazy cadence when it closes.

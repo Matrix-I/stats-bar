@@ -1,7 +1,9 @@
 // NetworkReader.swift — the ObservableObject behind the Network tab. It owns one NetworkInfo and
-// keeps it fresh from three cadences, all gated on the popover being open so nothing runs (no
-// pinging, no outbound lookups) while nobody's looking:
+// keeps it fresh from three cadences. The ping and outbound lookup are gated on the popover being
+// open so nothing runs while nobody's looking; the local read also runs when the Network menu-bar
+// item is visible (its glyph shows the live rate), and drops to a slow keep-warm when neither holds:
 //   • ~1 Hz  local reads   — interface, addresses, DNS, Wi-Fi radio, byte counters → totals + rates
+//                            (keep-warm every ~10 s when the rate is off-screen — see tick())
 //   • ~3 s   latency ping   — a short ICMP burst to a public host → latency / jitter / reachability
 //   • ~5 min public IP      — only if the user leaves "Show public IP" on; the sole outbound call
 //
@@ -40,9 +42,11 @@ final class NetworkReader: NSObject, ObservableObject {
 
     private var lastPingAt: DispatchTime?
     private var lastPublicIPAt: DispatchTime?
+    private var lastLocalReadAt: DispatchTime?
 
     private static let pingInterval: TimeInterval = 3
     private static let publicIPInterval: TimeInterval = 300
+    private static let idleInterval: TimeInterval = 10   // keep-warm cadence when the rate is off-screen
     private static let pingHost = "1.1.1.1"
     private static let pingHostV6 = "2606:4700:4700::1111"   // Cloudflare — fallback on IPv6-only links
 
@@ -87,11 +91,21 @@ final class NetworkReader: NSObject, ObservableObject {
     // MARK: Cadences
 
     private func tick() {
-        // Throughput must keep flowing so the menu-bar item shows a live up/down rate even while the
-        // popover is closed — so the local read always runs. It's just the counters (a light read)
-        // when closed, and the full interface/Wi-Fi/DNS read when the popover is open. The ping and
-        // the outbound public-IP lookup only matter inside the popover, so they stay gated.
-        fastRefresh(full: panelOpen)
+        // The local read (byte counters) drives the menu-bar up/down rate, so it's only worth running
+        // every second when that rate is actually on screen: the popover is open, or the Network
+        // menu-bar item is visible. When neither holds nobody can see the rate, so drop to a slow
+        // keep-warm instead of an SCDynamicStore + sysctl gather every second. It's the light counters
+        // read when the popover is closed, and the full interface/Wi-Fi/DNS read when it's open. The
+        // ping and the outbound public-IP lookup only matter inside the popover, so they stay gated.
+        // (Absent key ⇒ item shown, matching AppDelegate.refreshLabels' lenient default.)
+        let itemVisible = UserDefaults.standard.object(forKey: "showNetworkItem") as? Bool ?? true
+        if panelOpen || itemVisible {
+            fastRefresh(full: panelOpen)
+            lastLocalReadAt = DispatchTime.now()
+        } else if elapsed(since: lastLocalReadAt, exceeds: Self.idleInterval) {
+            fastRefresh(full: false)
+            lastLocalReadAt = DispatchTime.now()
+        }
         guard panelOpen else { return }
         maybePing(force: false)
         maybePublicIP(force: false)
