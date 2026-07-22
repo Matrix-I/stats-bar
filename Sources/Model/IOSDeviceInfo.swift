@@ -29,6 +29,9 @@ struct IOSDeviceInfo: Identifiable {
                                   // and read it with the `-n` flag rather than dropping it.
     var isLocked = false          // device is present + trusted but at the passcode lock screen: the diagnostics
                                   // registry (mAh/health/cycle) is refused, so those values are last-known or absent
+    var isLightRead = false       // internal: this row came from the cheap glyph-only pass (charge % + charging via
+                                  // the battery domain, no health read). Grafted like a locked row and never a
+                                  // baseline; not surfaced in the UI, since the popover always triggers a full read
     var lockedChargePercent: Double?  // live 0–100% charge from the lockdown battery domain, readable while locked
     var capturedAt: Date?         // timestamp this data was captured (for a locked row: when the health figures were last read)
 

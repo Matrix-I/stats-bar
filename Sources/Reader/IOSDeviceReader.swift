@@ -21,6 +21,11 @@ final class IOSDeviceReader: ObservableObject {
     /// `alerterInterval`, and an idle reader drops to `keepWarmInterval`. See tick(). Main-thread only.
     private var panelOpen = false
     private var lastRefreshAt = Date.distantPast
+    /// When the last FULL (heavy diagnostics-relay) read ran. While the glyph is shown but the popover
+    /// is closed, most ticks do the cheap light read (charge % only) and only every `alerterInterval`
+    /// falls back to a full read — to refresh health and feed the alerter. Separate from lastRefreshAt,
+    /// which gates the off-screen cadence. Main-thread only.
+    private var lastFullRefreshAt = Date.distantPast
     /// Refresh cadence when a phone is connected but off-screen (popover closed, glyph off): frequent
     /// enough for the thermal nudge (battery temperature drifts slowly, and iOS pauses charging when
     /// hot on its own), but not the every-second libimobiledevice fork storm that full 1 Hz would be.
@@ -88,22 +93,36 @@ final class IOSDeviceReader: ObservableObject {
     /// (see doRefresh — each refresh forks several libimobiledevice tools).
     private func tick() {
         let watched = panelOpen || UserDefaults.standard.bool(forKey: "showIPhoneMenuBar")
-        // On screen (popover open or glyph on) → full 1 Hz, and with NO wall-clock dependence so an
-        // NTP/clock step backwards can't stall the visible readout. Off screen → a relaxed cadence,
-        // clock-gated: a connected phone every alerterInterval, nothing connected every keepWarmInterval.
+        // Off screen → a relaxed, clock-gated cadence, always a full read (there's no glyph to keep
+        // live cheaply): a connected phone every alerterInterval (to feed the hot-battery alerter),
+        // nothing connected every keepWarmInterval (just to notice a plug-in).
         if !watched {
             let minInterval = devices.isEmpty ? Self.keepWarmInterval : Self.alerterInterval
             guard Date().timeIntervalSince(lastRefreshAt) >= minInterval else { return }
+            lastRefreshAt = Date()
+            lastFullRefreshAt = lastRefreshAt
+            refresh(full: true)
+            return
         }
+        // On screen, so refresh every tick with NO wall-clock dependence — an NTP/clock step backwards
+        // can't stall the visible readout. The popover shows full health, so it always does the heavy
+        // full read; the menu-bar glyph alone needs only charge % + charging, so between full reads it
+        // does the light battery-domain read (see doRefresh), falling back to a full read every
+        // alerterInterval to refresh health and feed the alerter.
         lastRefreshAt = Date()
-        refresh()
+        let full = panelOpen || Date().timeIntervalSince(lastFullRefreshAt) >= Self.alerterInterval
+        if full { lastFullRefreshAt = lastRefreshAt }
+        refresh(full: full)
     }
 
-    func refresh() {
+    /// `full: false` does the cheap glyph-only pass (enumerate + a light battery-domain charge read),
+    /// used between full reads while only the menu-bar glyph is shown. The default is a full read, so
+    /// init, the Refresh button, and popover-open all get the complete health readout.
+    func refresh(full: Bool = true) {
         guard !isBusy else { return }
         isBusy = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            self?.doRefresh()
+            self?.doRefresh(full: full)
         }
     }
 
@@ -192,7 +211,7 @@ final class IOSDeviceReader: ObservableObject {
         return nil
     }
 
-    private func doRefresh() {
+    private func doRefresh(full: Bool) {
         guard let ideviceIdPath = DeviceTool.path("idevice_id"),
               let ideviceInfoPath = DeviceTool.path("ideviceinfo"),
               let diagnosticsPath = DeviceTool.path("idevicediagnostics") else {
@@ -217,6 +236,28 @@ final class IOSDeviceReader: ObservableObject {
         for (udid, network) in devicesList {
             var dev = IOSDeviceInfo(id: udid)
             dev.isNetwork = network
+
+            // Light pass (menu-bar glyph only): the glyph needs just charge % + charging, which the
+            // lightweight lockdown battery domain gives in a single fork — so skip the heavy
+            // diagnostics-relay ioregentry read here, letting it run only on the periodic full pass
+            // (see tick()). Only a device we've already fully read (identity cached) qualifies; a
+            // first-sight device falls through to the full read below so it gets its identity and a
+            // health baseline. publish() grafts the last-known health onto a light read just like a
+            // locked read, and never treats it as a new baseline.
+            if !full, let cached = infoCache[udid],
+               let batt = readBatteryDomain(ideviceInfoPath, udid: udid, network: network) {
+                dev.name = cached.name
+                dev.model = cached.model
+                dev.iosVersion = cached.iosVersion
+                dev.stateOfCharge = batt.pct
+                dev.isCharging = batt.isCharging
+                dev.externalConnected = batt.external
+                dev.fullyCharged = batt.full
+                dev.isLightRead = true
+                results.append(dev)
+                continue
+            }
+
             // Identity is constant per device, so read it once and cache it — a steady-state refresh
             // then skips these three ideviceinfo forks. We cache only a successful read (DeviceName
             // non-nil), so a cache hit also means the lockdown handshake completed, i.e. the device is
@@ -324,8 +365,11 @@ final class IOSDeviceReader: ObservableObject {
                 return
             }
 
-            // Enumeration succeeded. Each fresh read is one of three kinds:
+            // Enumeration succeeded. Each fresh read is one of four kinds:
             //  • full read (unlocked)      → shown as-is, becomes the new cached baseline;
+            //  • light read (isLightRead)  → glyph-only pass: live charge %, no health read. Grafted
+            //                                exactly like a locked read (last-known health from cache,
+            //                                never a new baseline), just without the lock badge;
             //  • locked read (isLocked)    → live charge only, so graft the last-known health from
             //                                cache and keep it on screen indefinitely (health barely
             //                                changes; timestamped in the UI). Never a hard error;
@@ -335,15 +379,15 @@ final class IOSDeviceReader: ObservableObject {
             var merged: [IOSDeviceInfo] = []
             var freshGood: [IOSDeviceInfo] = []
             for dev in fresh {
-                if dev.errorMessage == nil, !dev.isLocked {
+                if dev.errorMessage == nil, !dev.isLocked, !dev.isLightRead {
                     merged.append(dev)
                     freshGood.append(dev)
-                } else if dev.isLocked {
+                } else if dev.isLocked || dev.isLightRead {
                     var m = dev
                     if let prev = self.lastGood.first(where: { $0.id == dev.id }) {
                         // Graft the static health figures; leave currentCapacity/amperage/temp/
-                        // voltage unset so charge stays live (lockedChargePercent) and no stale
-                        // dynamic values are shown.
+                        // voltage unset so charge stays live (a locked row's lockedChargePercent, a
+                        // light read's stateOfCharge) and no stale dynamic values are shown.
                         m.maxCapacity = prev.maxCapacity
                         m.nominalChargeCapacity = prev.nominalChargeCapacity
                         m.designCapacity = prev.designCapacity
