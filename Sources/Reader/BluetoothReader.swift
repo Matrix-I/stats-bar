@@ -32,12 +32,10 @@ final class BluetoothReader: ObservableObject {
     /// and republishes without waiting for the next system_profiler read.
     private let gatt = BluetoothGATT()
 
-    // Off-main read plumbing, mirroring BatteryReader's gated system_profiler read: at most one read
-    // in flight, throttled to `interval`, result handed back on main where `info` is published.
-    private let queue = DispatchQueue(label: "BluetoothReader.profiler", qos: .utility)
-    private var readInFlight = false
-    private var lastRead = Date.distantPast
-    private static let interval: TimeInterval = 5   // while the panel is open
+    // Off-main read plumbing, shared via ThrottledBackgroundValue: at most one read in flight,
+    // throttled to `interval`, result handed back on main where `info` is published.
+    private lazy var profilerRead = ThrottledBackgroundValue<BluetoothInfo?>(label: "BluetoothReader.profiler", every: Self.interval)
+    private static let interval: TimeInterval = 5   // while the panel is open (also the poll cadence)
 
     init() {
         gatt.onUpdate = { [weak self] in self?.republish() }
@@ -65,21 +63,13 @@ final class BluetoothReader: ObservableObject {
     /// Kick off a background read unless one is already running or the throttle window hasn't
     /// elapsed. `force` bypasses the throttle (startup + the Refresh button).
     private func maybeRead(force: Bool = false) {
-        guard !readInFlight else { return }
-        guard force || Date().timeIntervalSince(lastRead) >= Self.interval else { return }
-        readInFlight = true
-        queue.async { [weak self] in
-            let parsed = Self.read()
-            DispatchQueue.main.async {
-                guard let self else { return }
-                self.lastRead = Date()
-                self.readInFlight = false
-                if let parsed {
-                    self.baseInfo = parsed
-                    self.info = self.merged(parsed)
-                }
-                self.gatt.refresh()   // pick up any newly connected BLE peripherals
+        profilerRead.request(force: force, produce: { Self.read() }) { [weak self] parsed in
+            guard let self else { return }
+            if let parsed {
+                self.baseInfo = parsed
+                self.info = self.merged(parsed)
             }
+            self.gatt.refresh()   // pick up any newly connected BLE peripherals
         }
     }
 

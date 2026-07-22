@@ -16,12 +16,9 @@ final class BatteryReader: ObservableObject {
     // has no public IOKit key: Apple computes it with a private, smoothed algorithm that no raw
     // ratio reproduces. So we read the exact value macOS reports from `system_profiler`, but only
     // every few minutes on a background queue — battery health drifts over weeks, never per-second,
-    // so the 1 Hz gauge path below never pays that cost. These are all touched on the main thread.
+    // so the 1 Hz gauge path below never pays that cost. cachedMaxCapacity is touched on main only.
     private var cachedMaxCapacity: Int?
-    private var healthReadInFlight = false
-    private var lastHealthRead = Date.distantPast
-    private let healthQueue = DispatchQueue(label: "BatteryReader.health", qos: .utility)
-    private static let healthInterval: TimeInterval = 300
+    private lazy var healthRead = ThrottledBackgroundValue<Int?>(label: "BatteryReader.health", every: 300)
 
     private static let idleInterval: TimeInterval = 1    // refresh every second, even for the menu-bar glyph alone
     private static let activeInterval: TimeInterval = 1  // live readout while the detail panel is open
@@ -120,21 +117,12 @@ final class BatteryReader: ObservableObject {
         info = i
     }
 
-    /// Refresh macOS's "Maximum Capacity" at most once every `healthInterval`, off the main thread.
-    /// Called from `refresh()` (main); the read itself runs on `healthQueue` and hands the result
-    /// back on main so the cache fields are only ever touched there.
+    /// Refresh macOS's "Maximum Capacity" at most every few minutes, off the main thread. Called from
+    /// `refresh()` (main); the read runs on a background queue and the result lands back on main, so
+    /// cachedMaxCapacity is only ever touched there. Nil reads are ignored (keep the last value).
     private func maybeReadMaximumCapacity() {
-        guard !healthReadInFlight,
-              Date().timeIntervalSince(lastHealthRead) >= Self.healthInterval else { return }
-        healthReadInFlight = true
-        healthQueue.async { [weak self] in
-            let value = Self.readMaximumCapacity()
-            DispatchQueue.main.async {
-                guard let self else { return }
-                self.lastHealthRead = Date()
-                self.healthReadInFlight = false
-                if let value { self.cachedMaxCapacity = value }
-            }
+        healthRead.request(produce: { Self.readMaximumCapacity() }) { [weak self] value in
+            if let value { self?.cachedMaxCapacity = value }
         }
     }
 

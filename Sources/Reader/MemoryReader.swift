@@ -19,14 +19,11 @@ final class MemoryReader: ObservableObject {
     private static let idleInterval: TimeInterval = 2   // menu-bar % only
     private static let activeInterval: TimeInterval = 1 // live readout while the panel is open
 
-    // Top-processes list: read via `ps` on a background queue (it blocks briefly), at most every
-    // `topInterval`, only while the panel is open. Cached so the 1 Hz path can republish it without
-    // re-running ps. All touched on the main thread except the read itself. Mirrors CPUReader.
+    // Top-processes list: read via `ps` on a background queue (it blocks briefly), at most every two
+    // seconds, only while the panel is open. Cached so the 1 Hz path can republish it without
+    // re-running ps. cachedTop is touched on the main thread only. Mirrors CPUReader.
     private var cachedTop: [MemoryProcess] = []
-    private var topReadInFlight = false
-    private var lastTopRead = Date.distantPast
-    private let topQueue = DispatchQueue(label: "MemoryReader.top", qos: .utility)
-    private static let topInterval: TimeInterval = 2
+    private lazy var topRead = ThrottledBackgroundValue<[MemoryProcess]>(label: "MemoryReader.top", every: 2)
     private static let topCount = 6
 
     init() {
@@ -53,23 +50,16 @@ final class MemoryReader: ObservableObject {
         info = out
     }
 
-    /// Refresh the top-processes list at most every `topInterval`, off the main thread (ps blocks
+    /// Refresh the top-processes list at most every two seconds, off the main thread (ps blocks
     /// briefly). Mirrors CPUReader's cached, gated read.
     private func maybeReadTopProcesses() {
-        guard !topReadInFlight, Date().timeIntervalSince(lastTopRead) >= Self.topInterval else { return }
-        topReadInFlight = true
-        topQueue.async { [weak self] in
-            let procs = Self.readTopProcesses(Self.topCount)
-            DispatchQueue.main.async {
-                guard let self else { return }
-                self.lastTopRead = Date()
-                self.topReadInFlight = false
-                self.cachedTop = procs
-                // Republish right away so the list appears promptly on first open, not one tick later.
-                var cur = self.info
-                cur.topProcesses = procs
-                self.info = cur
-            }
+        topRead.request(produce: { Self.readTopProcesses(Self.topCount) }) { [weak self] procs in
+            guard let self else { return }
+            self.cachedTop = procs
+            // Republish right away so the list appears promptly on first open, not one tick later.
+            var cur = self.info
+            cur.topProcesses = procs
+            self.info = cur
         }
     }
 
