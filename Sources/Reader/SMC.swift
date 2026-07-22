@@ -12,6 +12,12 @@ final class SMC {
     private var conn: io_connect_t = 0
     private(set) var isAvailable = false
 
+    /// Successful KeyInfo lookups, keyed by SMC key name. A key's layout (`flt `, size 4) is fixed for
+    /// the machine's lifetime, so readFloat caches it and skips the extra READ_KEYINFO syscall on every
+    /// subsequent read of the same key. Single-thread: each reader owns its own SMC and calls readFloat
+    /// serially from its main-thread poll.
+    private var keyInfoCache: [String: KeyInfo] = [:]
+
     // The kernel expects an 80-byte SMCParamStruct. Swift lays the nested structs out to match ONLY
     // if `KeyInfo` is padded to its full 12-byte stride — without pad0…2, Swift packs `result`
     // right after the 9 used bytes and the whole tail shifts, giving a 76-byte struct the SMC rejects.
@@ -72,12 +78,22 @@ final class SMC {
         guard isAvailable else { return nil }
         let k = fourCC(key)
 
-        var infoIn = Param(); infoIn.key = k; infoIn.data8 = Self.readKeyInfo
-        var infoOut = Param()
-        guard call(&infoIn, &infoOut), infoOut.result == 0,
-              infoOut.keyInfo.dataType == fourCC("flt "), infoOut.keyInfo.dataSize == 4 else { return nil }
+        // Reuse the cached layout when we've seen this key before; otherwise do the one-time
+        // READ_KEYINFO probe and cache it. Only a `flt `/size-4 key is accepted (and cached) — a
+        // missing key stays uncached so it keeps probing and is picked up if it ever appears.
+        let keyInfo: KeyInfo
+        if let cached = keyInfoCache[key] {
+            keyInfo = cached
+        } else {
+            var infoIn = Param(); infoIn.key = k; infoIn.data8 = Self.readKeyInfo
+            var infoOut = Param()
+            guard call(&infoIn, &infoOut), infoOut.result == 0,
+                  infoOut.keyInfo.dataType == fourCC("flt "), infoOut.keyInfo.dataSize == 4 else { return nil }
+            keyInfo = infoOut.keyInfo
+            keyInfoCache[key] = keyInfo
+        }
 
-        var readIn = Param(); readIn.key = k; readIn.keyInfo = infoOut.keyInfo; readIn.data8 = Self.readBytes
+        var readIn = Param(); readIn.key = k; readIn.keyInfo = keyInfo; readIn.data8 = Self.readBytes
         var readOut = Param()
         guard call(&readIn, &readOut), readOut.result == 0 else { return nil }
 
