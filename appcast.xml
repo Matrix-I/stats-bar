@@ -7,6 +7,24 @@
     <language>en</language>
     <!-- APPCAST_ITEMS: update_appcast.sh prepends each release's <item> immediately below this line. -->
     <item>
+      <title>Version 2.6.0</title>
+      <pubDate>Wed, 22 Jul 2026 10:52:14 +0700</pubDate>
+      <sparkle:version>2.6.0</sparkle:version>
+      <sparkle:shortVersionString>2.6.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[# StatsBar v2.6.0
+
+Performance and polish.
+
+- **Android (multi-device):** fixed battery health being dropped or misreported when more than one Android phone is connected — each device's state is now tracked independently.
+- **CPU:** the frequency readout no longer shows a wrong value for one tick right after reopening the popover.
+- **Lower idle usage:** battery power-rail/fan SMC reads and iPhone/iPad USB polling now back off while their panel is closed, cutting background work.
+- **UI:** the Android "show more" expand no longer stutters; removed a duplicate "Status" row in the Network panel.
+
+_Not notarized — right-click → Open on first launch (or `xattr -dr com.apple.quarantine /Applications/StatsBar.app`)._]]></description>
+      <enclosure url="https://github.com/Matrix-I/stats-bar/releases/download/v2.6.0/StatsBar-v2.6.0.dmg" sparkle:edSignature="bjhFOBbdmH9Mj+Bk764i2RXzCOrYhaBmTSRP6KqnZkWkvjkHYHPCQEkbwzOmF8L8nWPEibx50x/Js6Mw8PNvDg==" length="2377265" type="application/octet-stream" />
+    </item>
+    <item>
       <title>Version 2.5.0</title>
       <pubDate>Tue, 21 Jul 2026 23:52:15 +0700</pubDate>
       <sparkle:version>2.5.0</sparkle:version>
