@@ -46,6 +46,12 @@ enum PublicIP {
         text("https://api6.ipify.org") { ipv6 = $0 }
         text("https://ipinfo.io/country") { country = $0.uppercased() }
 
+        // Let the three tasks finish, then tear the session down. Not strictly a leak (a
+        // completion-handler session with no delegate is reclaimed by ARC once its tasks end), but
+        // invalidating is the documented lifecycle and makes explicit that this per-fetch session,
+        // built fresh each call, is never reused.
+        session.finishTasksAndInvalidate()
+
         group.notify(queue: .global(qos: .utility)) {
             // Guard against a garbage body being mistaken for a country code (e.g. an HTML error page).
             let cc = (country?.count == 2 && country!.allSatisfy { $0.isASCII && $0.isLetter }) ? country : nil
