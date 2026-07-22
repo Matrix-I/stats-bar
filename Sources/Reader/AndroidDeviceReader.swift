@@ -30,8 +30,14 @@ final class AndroidDeviceReader: ObservableObject {
     private var isBusy = false
     private lazy var poll = PollingTimer { [weak self] in self?.refresh() }
 
+    /// Cache of the most recently read devices (only touched on the main thread, inside publish) —
+    /// keeps showing data across a brief USB drop instead of the device "vanishing".
     private var lastGood: [AndroidDeviceInfo] = []
-    private var lastGoodAt: Date?
+    /// Last time each serial appeared in a fresh enumeration, so cache staleness is judged per-device
+    /// rather than by a single global clock: a healthy phone refreshing can't keep resetting the
+    /// grace window (and hide another phone's error), and one good read can't evict another device's
+    /// cached health. Mirrors IOSDeviceReader.lastSeenAt. Main-thread only (touched inside publish).
+    private var lastSeenAt: [String: Date] = [:]
     private static let staleGraceGone: TimeInterval = 5
     private static let staleGraceUnreadable: TimeInterval = 30
 
@@ -264,11 +270,16 @@ final class AndroidDeviceReader: ObservableObject {
             self.toolsMissing = false
 
             let now = Date()
-            let sinceGood = self.lastGoodAt.map { now.timeIntervalSince($0) } ?? .infinity
+            // Note every serial currently on the bus (errored/offline devices count as present too),
+            // so cache staleness below is judged per-device rather than by a single global clock.
+            for dev in fresh { self.lastSeenAt[dev.id] = now }
 
+            // Empty enumeration → nothing on the bus. Ride out a brief blip, then let it go: a
+            // deliberate unplug should clear within a few seconds, not linger.
             if fresh.isEmpty {
-                if sinceGood < Self.staleGraceGone, !self.lastGood.isEmpty {
-                    self.devices = self.lastGood.map { var d = $0; d.isStale = true; return d }
+                let recent = self.lastGood.filter { self.seenWithin(Self.staleGraceGone, $0.id, now) }
+                if !recent.isEmpty {
+                    self.devices = recent.map { var d = $0; d.isStale = true; return d }
                     self.statusMessage = nil
                 } else {
                     self.devices = []
@@ -281,22 +292,44 @@ final class AndroidDeviceReader: ObservableObject {
             var merged: [AndroidDeviceInfo] = []
             var freshGood: [AndroidDeviceInfo] = []
             for dev in fresh {
-                if dev.errorMessage != nil, sinceGood < Self.staleGraceUnreadable,
-                   let prev = self.lastGood.first(where: { $0.id == dev.id }) {
+                if dev.errorMessage == nil {
+                    merged.append(dev)
+                    freshGood.append(dev)
+                } else if let prev = self.lastGood.first(where: { $0.id == dev.id }),
+                          let cap = prev.capturedAt, now.timeIntervalSince(cap) < Self.staleGraceUnreadable {
+                    // Grace measured from THIS device's own last good read, so a healthy sibling
+                    // refreshing can't keep resetting it and hide this device's error forever.
                     var s = prev; s.isStale = true
                     merged.append(s)
                 } else {
                     merged.append(dev)
-                    if dev.errorMessage == nil { freshGood.append(dev) }
                 }
             }
             self.devices = merged
             self.statusMessage = nil
 
+            // Merge (don't replace) fresh good reads into the cache so a device that read OK this tick
+            // updates its own entry while a sibling that errored keeps its previously cached good data
+            // — otherwise a single healthy device would evict every other device's health.
             if !freshGood.isEmpty {
-                self.lastGood = freshGood
-                self.lastGoodAt = now
+                var updated = self.lastGood
+                for g in freshGood {
+                    if let i = updated.firstIndex(where: { $0.id == g.id }) { updated[i] = g }
+                    else { updated.append(g) }
+                }
+                self.lastGood = updated
             }
+            // Prune entries whose device has been off the bus longer than the ride-out window, so a
+            // genuinely departed device doesn't linger (or briefly resurrect when the bus later goes
+            // fully empty), while a one-tick enumeration blip keeps its cached entry.
+            self.lastGood = self.lastGood.filter { self.seenWithin(Self.staleGraceGone, $0.id, now) }
         }
+    }
+
+    /// True if `id` appeared in a fresh enumeration within `window` of `now`. Main-thread only
+    /// (lastSeenAt is only touched inside publish).
+    private func seenWithin(_ window: TimeInterval, _ id: String, _ now: Date) -> Bool {
+        guard let seen = lastSeenAt[id] else { return false }
+        return now.timeIntervalSince(seen) < window
     }
 }
