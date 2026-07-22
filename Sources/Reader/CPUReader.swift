@@ -24,7 +24,7 @@ final class CPUReader: ObservableObject {
 
     private lazy var poll = PollingTimer { [weak self] in self?.refresh() }
     private var panelOpen = false
-    private let smc = SMC()
+    private let smc = SMC.shared
     private let frequency = CPUFrequency()
     private var cachedFreq: CPUFrequency.Reading? = nil
 

@@ -11,7 +11,7 @@ final class BatteryReader: ObservableObject {
     @Published var info = BatteryInfo()
     private lazy var poll = PollingTimer { [weak self] in self?.refresh() }
     private var panelOpen = false
-    private let smc = SMC()
+    private let smc = SMC.shared
 
     /// Power-source change notifications (plug/unplug, charging state, charge %) trigger an immediate
     /// refresh, so the menu-bar glyph reacts at once even though the closed-panel poll is slow — that's

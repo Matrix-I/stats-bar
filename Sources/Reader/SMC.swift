@@ -9,13 +9,19 @@ import Foundation
 import IOKit
 
 final class SMC {
+    /// The one AppleSMC connection, shared by every reader (BatteryReader, CPUReader). There's a single
+    /// SMC on the machine, so opening one user client and reusing it — rather than one per reader —
+    /// keeps a single IOServiceOpen handle and one shared KeyInfo cache. Safe as a singleton because
+    /// every caller touches it only from the main thread (see keyInfoCache).
+    static let shared = SMC()
+
     private var conn: io_connect_t = 0
     private(set) var isAvailable = false
 
     /// Successful KeyInfo lookups, keyed by SMC key name. A key's layout (`flt `, size 4) is fixed for
     /// the machine's lifetime, so readFloat caches it and skips the extra READ_KEYINFO syscall on every
-    /// subsequent read of the same key. Single-thread: each reader owns its own SMC and calls readFloat
-    /// serially from its main-thread poll.
+    /// subsequent read of the same key. Single-thread: the shared SMC is only ever called from the main
+    /// thread (both readers' polls, and CPUReader's one-off startup discovery, run there).
     private var keyInfoCache: [String: KeyInfo] = [:]
 
     // The kernel expects an 80-byte SMCParamStruct. Swift lays the nested structs out to match ONLY
@@ -45,7 +51,8 @@ final class SMC {
     private static let readKeyInfo: UInt8 = 9   // SMC_CMD_READ_KEYINFO
     private static let kSMCHandleYPCEvent: UInt32 = 2
 
-    init() {
+    /// Private so `shared` is the only instance — one AppleSMC connection for the whole app.
+    private init() {
         let svc = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSMC"))
         guard svc != IO_OBJECT_NULL else { return }
         defer { IOObjectRelease(svc) }
