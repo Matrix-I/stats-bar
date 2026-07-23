@@ -81,7 +81,13 @@ struct ControlCenterView: View {
             SectionCaption("GENERAL")
             switchRow("Launch at login", isOn: Binding(
                 get: { launchAtLogin },
-                set: { LoginItem.setEnabled($0); launchAtLogin = $0 }
+                set: {
+                    LoginItem.setEnabled($0)
+                    // Reconcile with the REAL status, not the requested value: setEnabled swallows a
+                    // failed/blocked register()/unregister() (or the OS may return .requiresApproval),
+                    // so re-reading snaps the toggle back to the truth instead of showing a false ON.
+                    launchAtLogin = LoginItem.isEnabled
+                }
             ))
 
             switchRow("Automatically check for updates", isOn: Binding(

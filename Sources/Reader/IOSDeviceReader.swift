@@ -20,12 +20,15 @@ final class IOSDeviceReader: ObservableObject {
     /// nobody is watching still refreshes — to feed the hot-battery alerter — but only every
     /// `alerterInterval`, and an idle reader drops to `keepWarmInterval`. See tick(). Main-thread only.
     private var panelOpen = false
-    private var lastRefreshAt = Date.distantPast
+    /// Cadence gates use the monotonic clock (DispatchTime / mach uptime), never Date(), so a
+    /// wall-clock / NTP step backwards can't wedge a cadence into never firing. nil = never refreshed
+    /// (so the gate reads as elapsed). Main-thread only.
+    private var lastRefreshAt: DispatchTime?
     /// When the last FULL (heavy diagnostics-relay) read ran. While the glyph is shown but the popover
     /// is closed, most ticks do the cheap light read (charge % only) and only every `alerterInterval`
     /// falls back to a full read — to refresh health and feed the alerter. Separate from lastRefreshAt,
-    /// which gates the off-screen cadence. Main-thread only.
-    private var lastFullRefreshAt = Date.distantPast
+    /// which gates the off-screen cadence. Monotonic, main-thread only.
+    private var lastFullRefreshAt: DispatchTime?
     /// Refresh cadence when a phone is connected but off-screen (popover closed, glyph off): frequent
     /// enough for the thermal nudge (battery temperature drifts slowly, and iOS pauses charging when
     /// hot on its own), but not the every-second libimobiledevice fork storm that full 1 Hz would be.
@@ -93,26 +96,37 @@ final class IOSDeviceReader: ObservableObject {
     /// (see doRefresh — each refresh forks several libimobiledevice tools).
     private func tick() {
         let watched = panelOpen || UserDefaults.standard.bool(forKey: "showIPhoneMenuBar")
-        // Off screen → a relaxed, clock-gated cadence, always a full read (there's no glyph to keep
-        // live cheaply): a connected phone every alerterInterval (to feed the hot-battery alerter),
-        // nothing connected every keepWarmInterval (just to notice a plug-in).
+        // Off screen → a relaxed cadence, always a full read (there's no glyph to keep live cheaply):
+        // a connected phone every alerterInterval (to feed the hot-battery alerter), nothing connected
+        // every keepWarmInterval (just to notice a plug-in).
         if !watched {
             let minInterval = devices.isEmpty ? Self.keepWarmInterval : Self.alerterInterval
-            guard Date().timeIntervalSince(lastRefreshAt) >= minInterval else { return }
-            lastRefreshAt = Date()
-            lastFullRefreshAt = lastRefreshAt
+            guard elapsed(since: lastRefreshAt, atLeast: minInterval) else { return }
+            let now = DispatchTime.now()
+            lastRefreshAt = now
+            lastFullRefreshAt = now
             refresh(full: true)
             return
         }
-        // On screen, so refresh every tick with NO wall-clock dependence — an NTP/clock step backwards
-        // can't stall the visible readout. The popover shows full health, so it always does the heavy
+        // On screen, so refresh every tick. The popover shows full health, so it always does the heavy
         // full read; the menu-bar glyph alone needs only charge % + charging, so between full reads it
         // does the light battery-domain read (see doRefresh), falling back to a full read every
-        // alerterInterval to refresh health and feed the alerter.
-        lastRefreshAt = Date()
-        let full = panelOpen || Date().timeIntervalSince(lastFullRefreshAt) >= Self.alerterInterval
-        if full { lastFullRefreshAt = lastRefreshAt }
+        // alerterInterval to refresh health and feed the alerter. The full-read gate uses the monotonic
+        // clock (see elapsed), so an NTP/clock step can't wedge it — and the light read runs every tick
+        // regardless, so the visible glyph never stalls.
+        let now = DispatchTime.now()
+        lastRefreshAt = now
+        let full = panelOpen || elapsed(since: lastFullRefreshAt, atLeast: Self.alerterInterval)
+        if full { lastFullRefreshAt = now }
         refresh(full: full)
+    }
+
+    /// Monotonic elapsed-time gate: true when `mark` is nil (never yet) or at least `seconds` of mach
+    /// uptime have passed since it. DispatchTime never runs backwards, so a wall-clock / NTP step can't
+    /// stall a cadence the way Date() would.
+    private func elapsed(since mark: DispatchTime?, atLeast seconds: TimeInterval) -> Bool {
+        guard let mark else { return true }
+        return Double(DispatchTime.now().uptimeNanoseconds - mark.uptimeNanoseconds) / 1_000_000_000 >= seconds
     }
 
     /// `full: false` does the cheap glyph-only pass (enumerate + a light battery-domain charge read),
@@ -306,27 +320,20 @@ final class IOSDeviceReader: ObservableObject {
                 dev.externalConnected = reg["ExternalConnected"] as? Bool ?? false
                 dev.fullyCharged = reg["FullyCharged"] as? Bool ?? false
                 dev.capturedAt = Date()
-            } else if trusted, let batt = readBatteryDomain(ideviceInfoPath, udid: udid, network: network) {
+            } else if trusted {
                 // Diagnostics relay is refused while the device sits at the passcode lock screen
-                // (lockdownd returns PASSWORD_PROTECTED), so the detailed registry is unreadable — but
-                // the device is still paired, so the lockdown battery domain still answers. Show a live
-                // charge % and let publish() keep the last-known health on screen (grafted from cache)
-                // rather than dropping to an error.
+                // (lockdownd returns PASSWORD_PROTECTED), so the detailed registry is unreadable.
+                // The device is still here and trusted, though — fall back to the lockdown battery
+                // domain for a live charge %, and let publish() keep the last-known health on
+                // screen (grafted from cache) rather than dropping to an error.
                 dev.isLocked = true
-                dev.lockedChargePercent = batt.pct
-                dev.isCharging = batt.isCharging
-                dev.externalConnected = batt.external
-                dev.fullyCharged = batt.full
+                if let batt = readBatteryDomain(ideviceInfoPath, udid: udid, network: network) {
+                    dev.lockedChargePercent = batt.pct
+                    dev.isCharging = batt.isCharging
+                    dev.externalConnected = batt.external
+                    dev.fullyCharged = batt.full
+                }
             } else {
-                // Neither the diagnostics relay nor the lockdown battery domain answered. Both need a
-                // live pairing, so the pairing itself is gone (trust revoked, or the device unpaired
-                // while the cable stayed connected), not just a locked screen. A cache hit had assumed
-                // the device was still trusted; forget that cached identity so the next tick re-reads it
-                // and reclassifies, and surface the trust error instead of a phantom "locked" that would
-                // never clear (the device stays USB-enumerated, so the cache is never pruned by absence).
-                // A momentary domain blip on a genuinely locked device is ridden out by publish()'s
-                // staleGraceUnreadable window, so the error only sticks once the pairing is really gone.
-                infoCache[udid] = nil
                 dev.errorMessage = "Couldn't reach the device — unlock it and tap Trust."
             }
 
