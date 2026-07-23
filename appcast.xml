@@ -7,6 +7,19 @@
     <language>en</language>
     <!-- APPCAST_ITEMS: update_appcast.sh prepends each release's <item> immediately below this line. -->
     <item>
+      <title>Version 2.9.1</title>
+      <pubDate>Thu, 23 Jul 2026 22:40:18 +0700</pubDate>
+      <sparkle:version>2.9.1</sparkle:version>
+      <sparkle:shortVersionString>2.9.1</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[# StatsBar v2.9.1
+
+- **More frequent update checks:** the background update check now runs every 6 hours instead of once a day, so new versions arrive sooner. You can still trigger a check any time from the "Check for updates…" button.
+
+_Not notarized — right-click → Open on first launch (or `xattr -dr com.apple.quarantine /Applications/StatsBar.app`)._]]></description>
+      <enclosure url="https://github.com/Matrix-I/stats-bar/releases/download/v2.9.1/StatsBar-v2.9.1.dmg" sparkle:edSignature="PagPN4soRFg2VEcifWv08upJXHQeX6WhXL473NWIhtPPnQgC162QWIg+91ALWi2Xa97v1y7uwxNE+j2xJ8O1Cw==" length="2396307" type="application/octet-stream" />
+    </item>
+    <item>
       <title>Version 2.9.0</title>
       <pubDate>Thu, 23 Jul 2026 09:55:03 +0700</pubDate>
       <sparkle:version>2.9.0</sparkle:version>
