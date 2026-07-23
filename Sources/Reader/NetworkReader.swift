@@ -25,6 +25,9 @@ final class NetworkReader: NSObject, ObservableObject {
 
     // All of the following are touched on the main thread only.
     private var isBusy = false
+    // Set when a forced full refresh arrives while a light read is in flight; the completing read then
+    // re-fires as a full read so the popover's detail rows aren't left blank until the next tick.
+    private var pendingFull = false
     private var isPinging = false
     private var isFetchingPublicIP = false
     // "Is anyone looking?" — the detail popover is open, or the Network menu-bar item is visible (its
@@ -141,14 +144,24 @@ final class NetworkReader: NSObject, ObservableObject {
     }
 
     private func fastRefresh(full: Bool) {
-        guard !isBusy else { return }
+        guard !isBusy else {
+            // A read is already in flight. If this is a forced full read (the popover just opened or
+            // Location was granted) landing on top of an in-flight LIGHT read, remember it — otherwise
+            // the full interface/DNS/Wi-Fi detail wouldn't populate until the next 1 Hz tick, leaving
+            // those rows blank on the first-ever open. The completing read re-fires it as a full read.
+            if full { pendingFull = true }
+            return
+        }
         isBusy = true
+        let full = full || pendingFull
+        pendingFull = false
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
             let r = self.gatherLocal(full: full)
             DispatchQueue.main.async {
                 self.applyLocal(r)
                 self.isBusy = false
+                if self.pendingFull { self.fastRefresh(full: true) }
             }
         }
     }
@@ -199,6 +212,14 @@ final class NetworkReader: NSObject, ObservableObject {
             } else {
                 lastSampleTime = now; lastRx = c.rxBytes; lastTx = c.txBytes
             }
+        } else {
+            // No primary interface (fully disconnected): collapse the live rate to 0 so the menu-bar
+            // glyph doesn't keep drawing a frozen last value while the popover says "No active
+            // connection". Drop lastSampleTime so the next connection re-primes from its first sample
+            // instead of computing a huge delta across the offline gap. Totals are cumulative and stay.
+            info.downloadRate = 0
+            info.uploadRate = 0
+            lastSampleTime = nil
         }
 
         // Interface / DNS / Wi-Fi detail only comes in on a full read; on the light (menu-bar-only)

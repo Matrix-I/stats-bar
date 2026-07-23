@@ -126,7 +126,12 @@ final class AndroidDeviceReader: ObservableObject {
     ///                                                   "Estimated power use (mAh):" section
     /// Confirmed against a real device (Redmi Note 7): 3932 / 4000 mAh, matching its published spec.
     private func readCapacity(_ path: String, serial: String) -> (max: Int?, design: Int?) {
-        guard let data = DeviceTool.run(path, ["-s", serial, "shell", "dumpsys", "batterystats"]),
+        // Filter on-device: `dumpsys batterystats` can be several MB of history, but only two lines
+        // matter here, so grep them out on the phone (like readBroadcastCycleCount) instead of
+        // transferring and string-splitting the whole dump in-process. grep preserves order, so the
+        // first match of each prefix below is the same line the full parse would have found.
+        let probe = "dumpsys batterystats 2>/dev/null | grep -E 'Estimated battery capacity:|Capacity:'"
+        guard let data = DeviceTool.run(path, ["-s", serial, "shell", probe]),
               let s = String(data: data, encoding: .utf8) else { return (nil, nil) }
         var maxCap: Int?
         var designCap: Int?
@@ -198,6 +203,15 @@ final class AndroidDeviceReader: ObservableObject {
         }
 
         let listed = listDevices(adbPath)
+
+        // Drop capacity caches for serials no longer on the bus, so reconnecting a device re-reads its
+        // learned capacity (Android's coulomb-counter recalibrates over time) instead of serving a value
+        // cached at first connect for the rest of the session. Mirrors IOSDeviceReader pruning infoCache
+        // each enumeration. Background-thread only, like the rest of doRefresh.
+        let liveSerials = Set(listed.map(\.serial))
+        capacityCache = capacityCache.filter { liveSerials.contains($0.key) }
+        capacityLastAttempt = capacityLastAttempt.filter { liveSerials.contains($0.key) }
+
         guard !listed.isEmpty else {
             publish(devices: [], toolsMissing: false,
                     status: "No Android device found over USB.\nPlug in the cable and enable USB debugging.")

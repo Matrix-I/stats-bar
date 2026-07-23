@@ -79,23 +79,31 @@ final class SMC {
         return IOConnectCallStructMethod(conn, Self.kSMCHandleYPCEvent, &input, inSize, &output, &outSize) == KERN_SUCCESS
     }
 
-    /// Returns the value of a 32-bit-float SMC key in its native unit (Watts for the P* rails),
-    /// or nil if SMC is unavailable, the key is missing, or it isn't a `flt ` key.
+    /// Returns the value of a numeric SMC key in its native unit (Watts for the P* rails, RPM for the
+    /// fans, °C for the Intel TC** temperatures), or nil if SMC is unavailable, the key is missing, or
+    /// its layout isn't supported. Handles `flt ` (little-endian Float32) and `sp78` (big-endian signed
+    /// 8.8 fixed-point — the classic Intel CPU-die temperature keys).
     func readFloat(_ key: String) -> Double? {
         guard isAvailable else { return nil }
         let k = fourCC(key)
 
         // Reuse the cached layout when we've seen this key before; otherwise do the one-time
-        // READ_KEYINFO probe and cache it. Only a `flt `/size-4 key is accepted (and cached) — a
-        // missing key stays uncached so it keeps probing and is picked up if it ever appears.
+        // READ_KEYINFO probe and cache it. Only a supported layout (`flt `/size-4 or `sp78`/size-2) is
+        // accepted (and cached) — anything else, or a missing key, stays uncached so it keeps probing
+        // and is picked up if it ever appears.
         let keyInfo: KeyInfo
         if let cached = keyInfoCache[key] {
             keyInfo = cached
         } else {
             var infoIn = Param(); infoIn.key = k; infoIn.data8 = Self.readKeyInfo
             var infoOut = Param()
-            guard call(&infoIn, &infoOut), infoOut.result == 0,
-                  infoOut.keyInfo.dataType == fourCC("flt "), infoOut.keyInfo.dataSize == 4 else { return nil }
+            guard call(&infoIn, &infoOut), infoOut.result == 0 else { return nil }
+            // Accept a little-endian Float32 (`flt `, size 4 — the Apple-Silicon rails/temps and fan
+            // RPM) or a big-endian signed 8.8 fixed-point (`sp78`, size 2 — the classic Intel CPU-die
+            // temperature keys like TC0P/TC0D). Any other layout (or a missing key) stays uncached so
+            // it keeps probing and is picked up if it ever appears.
+            let dt = infoOut.keyInfo.dataType, sz = infoOut.keyInfo.dataSize
+            guard (dt == fourCC("flt ") && sz == 4) || (dt == fourCC("sp78") && sz == 2) else { return nil }
             keyInfo = infoOut.keyInfo
             keyInfoCache[key] = keyInfo
         }
@@ -104,6 +112,11 @@ final class SMC {
         var readOut = Param()
         guard call(&readIn, &readOut), readOut.result == 0 else { return nil }
 
+        if keyInfo.dataType == fourCC("sp78") {
+            // sp78: 2 bytes, big-endian, signed, 8 fractional bits — value is raw / 256 (°C for TC** keys).
+            let raw = Int16(bitPattern: (UInt16(readOut.bytes.0) << 8) | UInt16(readOut.bytes.1))
+            return Double(raw) / 256.0
+        }
         let raw = UInt32(readOut.bytes.0)
                 | (UInt32(readOut.bytes.1) << 8)
                 | (UInt32(readOut.bytes.2) << 16)

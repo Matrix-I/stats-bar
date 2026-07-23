@@ -33,9 +33,14 @@ final class BluetoothReader: ObservableObject {
     private let gatt = BluetoothGATT()
 
     // Off-main read plumbing, shared via ThrottledBackgroundValue: at most one read in flight,
-    // throttled to `interval`, result handed back on main where `info` is published.
-    private lazy var profilerRead = ThrottledBackgroundValue<BluetoothInfo?>(label: "BluetoothReader.profiler", every: Self.interval)
-    private static let interval: TimeInterval = 5   // while the panel is open (also the poll cadence)
+    // throttled to `profilerThrottle`, result handed back on main where `info` is published.
+    private lazy var profilerRead = ThrottledBackgroundValue<BluetoothInfo?>(label: "BluetoothReader.profiler", every: Self.profilerThrottle)
+    private static let interval: TimeInterval = 5   // poll cadence while the panel is open
+    // ThrottledBackgroundValue measures the gap since the previous COMPLETION, so a throttle equal to
+    // the poll cadence skips every other tick (only `interval − readTime` has elapsed at each tick) and
+    // halves the effective refresh rate. Keep the throttle comfortably below the poll cadence so every
+    // tick runs, while still coalescing bursts (e.g. a forced open landing next to a scheduled tick).
+    private static let profilerThrottle: TimeInterval = 3.5
 
     init() {
         gatt.onUpdate = { [weak self] in self?.republish() }
