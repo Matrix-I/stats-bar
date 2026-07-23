@@ -135,15 +135,15 @@ struct CPUDetailView: View {
     private var details: some View {
         SectionCaption("DETAILS")
         VStack(spacing: 6) {
-            CPUStatRow(color: CPUPalette.system, label: "System", value: pct(info.systemPercent))
-            CPUStatRow(color: CPUPalette.user, label: "User", value: pct(info.userPercent))
-            CPUStatRow(color: CPUPalette.idle, label: "Idle", value: pct(info.idlePercent))
+            LegendRow(color: CPUPalette.system, label: "System", value: pct(info.systemPercent))
+            LegendRow(color: CPUPalette.user, label: "User", value: pct(info.userPercent))
+            LegendRow(color: CPUPalette.idle, label: "Idle", value: pct(info.idlePercent))
 
             if let eff = info.efficiencyPercent {
-                CPUStatRow(color: CPUPalette.efficiency, label: "Efficiency cores", value: pct(eff))
+                LegendRow(color: CPUPalette.efficiency, label: "Efficiency cores", value: pct(eff))
             }
             if let perf = info.performancePercent {
-                CPUStatRow(color: CPUPalette.performance, label: "Performance cores", value: pct(perf))
+                LegendRow(color: CPUPalette.performance, label: "Performance cores", value: pct(perf))
             }
 
             InfoRow(label: "Uptime", value: fmtUptime(info.uptimeSeconds))
@@ -162,10 +162,10 @@ struct CPUDetailView: View {
             VStack(spacing: 6) {
                 InfoRow(label: "All cores", value: mhz(all))
                 if let eff = info.efficiencyFrequencyMHz {
-                    CPUStatRow(color: CPUPalette.efficiency, label: "Efficiency cores", value: mhz(eff))
+                    LegendRow(color: CPUPalette.efficiency, label: "Efficiency cores", value: mhz(eff))
                 }
                 if let perf = info.performanceFrequencyMHz {
-                    CPUStatRow(color: CPUPalette.performance, label: "Performance cores", value: mhz(perf))
+                    LegendRow(color: CPUPalette.performance, label: "Performance cores", value: mhz(perf))
                 }
             }
         }
@@ -191,27 +191,5 @@ struct CPUDetailView: View {
                 }
             }
         }
-    }
-}
-
-/// A DETAIL row: a colour-keyed square (tying it to the ring), the label in white, and the value.
-/// Mirrors the Memory legend rows so the two popovers read identically.
-private struct CPUStatRow: View {
-    let color: Color
-    let label: String
-    let value: String
-
-    var body: some View {
-        HStack {
-            RoundedRectangle(cornerRadius: 2).fill(color)
-                .frame(width: 9, height: 9)
-            Text(label).foregroundStyle(.white)
-            Spacer()
-            Text(value)
-                .fontWeight(.medium)
-                .monospacedDigit()
-                .lineLimit(1)
-        }
-        .font(.system(size: 12))
     }
 }

@@ -114,6 +114,29 @@ struct InfoRow: View {
     }
 }
 
+/// A colour-keyed legend row: a small rounded square tying the row to its chart segment, the label in
+/// white, and a right-aligned value. Shared by the CPU DETAIL rows and the Memory legend so the two
+/// popovers read identically — it was copy-pasted as CPUStatRow / MemoryLegendRow before.
+struct LegendRow: View {
+    let color: Color
+    let label: String
+    let value: String
+
+    var body: some View {
+        HStack {
+            RoundedRectangle(cornerRadius: 2).fill(color)
+                .frame(width: 9, height: 9)
+            Text(label).foregroundStyle(.white)
+            Spacer()
+            Text(value)
+                .fontWeight(.medium)
+                .monospacedDigit()
+                .lineLimit(1)
+        }
+        .font(.system(size: 12))
+    }
+}
+
 // MARK: - TOP PROCESSES table (shared by the CPU and RAM popovers)
 
 /// A process's app icon, or a generic placeholder glyph for the daemons/helpers that own none.

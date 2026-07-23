@@ -17,13 +17,12 @@ import Foundation
 enum Pinger {
 
     struct Result {
-        var samples: [Double]      // per-reply RTT in ms
         var latencyMs: Double?     // mean
         var jitterMs: Double?      // population standard deviation
         var reachable: Bool        // at least one reply came back
     }
 
-    private static let unreachable = Result(samples: [], latencyMs: nil, jitterMs: nil, reachable: false)
+    private static let unreachable = Result(latencyMs: nil, jitterMs: nil, reachable: false)
 
     /// Pings `host` (an IPv4 dotted-quad or an IPv6 literal) `count` times and summarises the RTTs.
     static func ping(host: String, count: Int = 5, timeout: TimeInterval = 1.0) -> Result {
@@ -68,7 +67,7 @@ enum Pinger {
             let variance = samples.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / Double(samples.count)
             jitter = variance.squareRoot()
         }
-        return Result(samples: samples, latencyMs: mean, jitterMs: jitter, reachable: !samples.isEmpty)
+        return Result(latencyMs: mean, jitterMs: jitter, reachable: !samples.isEmpty)
     }
 
     /// Sends one IPv4 echo request and waits (up to `timeout`) for the matching reply, returning the

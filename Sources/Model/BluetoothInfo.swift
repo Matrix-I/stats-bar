@@ -21,11 +21,6 @@ struct BluetoothDeviceInfo: Identifiable {
 
     var id: String { address }
 
-    /// True when macOS reports at least one battery level for this device.
-    var hasBattery: Bool {
-        batteryMain != nil || batteryLeft != nil || batteryRight != nil || batteryCase != nil
-    }
-
     /// The single headline percentage for the row's right edge: the main level when present,
     /// otherwise the lower of the two earbud levels (the one you'd charge first). The case level is
     /// deliberately NOT folded in — a drained case sitting in a drawer must not make healthy buds

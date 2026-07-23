@@ -142,10 +142,10 @@ struct MemoryDetailView: View {
 
         SectionCaption("DETAILS")
         VStack(spacing: 6) {
-            MemoryLegendRow(color: Self.appColor, label: "App", value: fmtGB(info.app))
-            MemoryLegendRow(color: Self.wiredColor, label: "Wired", value: fmtGB(info.wired))
-            MemoryLegendRow(color: Self.compressedColor, label: "Compressed", value: fmtGB(info.compressed))
-            MemoryLegendRow(color: Self.freeColor, label: "Free", value: fmtGB(info.free))
+            LegendRow(color: Self.appColor, label: "App", value: fmtGB(info.app))
+            LegendRow(color: Self.wiredColor, label: "Wired", value: fmtGB(info.wired))
+            LegendRow(color: Self.compressedColor, label: "Compressed", value: fmtGB(info.compressed))
+            LegendRow(color: Self.freeColor, label: "Free", value: fmtGB(info.free))
             InfoRow(label: "Swap", value: fmtGB(info.swapUsed))
         }
     }
@@ -161,7 +161,7 @@ struct MemoryDetailView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         } else {
             VStack(spacing: 6) {
-                ProcessTableHeader()
+                ProcessTableHeader(valueLabel: "Memory")
                 ForEach(info.topProcesses) { p in
                     ProcessRow(icon: p.icon, name: p.name, value: fmtProcessMemory(p.bytes))
                 }
@@ -197,25 +197,5 @@ private struct MemoryBar: View {
         }
         .frame(height: 10)
         .clipShape(RoundedRectangle(cornerRadius: 3))
-    }
-}
-
-private struct MemoryLegendRow: View {
-    let color: Color
-    let label: String
-    let value: String
-
-    var body: some View {
-        HStack {
-            RoundedRectangle(cornerRadius: 2).fill(color)
-                .frame(width: 9, height: 9)
-            Text(label).foregroundStyle(.white)
-            Spacer()
-            Text(value)
-                .fontWeight(.medium)
-                .monospacedDigit()
-                .lineLimit(1)
-        }
-        .font(.system(size: 12))
     }
 }
