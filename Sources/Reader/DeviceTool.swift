@@ -23,15 +23,22 @@ enum DeviceTool {
         return nil
     }
 
+    /// Modern async wrapper for executing a command with timeout and concurrent pipe draining.
+    static func runAsync(_ path: String, _ args: [String], timeout: TimeInterval = toolTimeout) async -> Data? {
+        await Task.detached(priority: .userInitiated) {
+            run(path, args, timeout: timeout)
+        }.value
+    }
+
     /// Runs a command, returns stdout if the exit code is 0, nil otherwise. Reads both pipes
     /// concurrently — reading them sequentially (stdout then stderr) can deadlock if the child
     /// process fills the stderr buffer while we're still waiting for EOF on stdout.
     ///
-    /// Bails out if the tool overruns `toolTimeout`: unplugging the device mid-read can leave
+    /// Bails out if the tool overruns `timeout`: unplugging the device mid-read can leave
     /// idevicediagnostics / ideviceinfo / adb blocked indefinitely, which would otherwise hang the
     /// reader thread (waitUntilExit never returns), wedge its isBusy flag at true, and freeze the
     /// whole section until relaunch.
-    static func run(_ path: String, _ args: [String]) -> Data? {
+    static func run(_ path: String, _ args: [String], timeout: TimeInterval = toolTimeout) -> Data? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = args
@@ -45,11 +52,15 @@ enum DeviceTool {
             return nil
         }
 
+        final class DataContainer: @unchecked Sendable {
+            var data = Data()
+        }
+        let outContainer = DataContainer()
+
         let group = DispatchGroup()
-        var outData = Data()
         group.enter()
         DispatchQueue.global(qos: .userInitiated).async {
-            outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+            outContainer.data = outPipe.fileHandleForReading.readDataToEndOfFile()
             group.leave()
         }
         group.enter()
@@ -58,7 +69,7 @@ enum DeviceTool {
             group.leave()
         }
 
-        if group.wait(timeout: .now() + toolTimeout) == .timedOut {
+        if group.wait(timeout: .now() + timeout) == .timedOut {
             process.terminate()                          // SIGTERM
             try? outPipe.fileHandleForReading.close()
             try? errPipe.fileHandleForReading.close()
@@ -76,6 +87,6 @@ enum DeviceTool {
             return nil
         }
         process.waitUntilExit()
-        return process.terminationStatus == 0 ? outData : nil
+        return process.terminationStatus == 0 ? outContainer.data : nil
     }
 }
