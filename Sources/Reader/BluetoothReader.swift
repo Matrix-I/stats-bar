@@ -104,7 +104,7 @@ final class BluetoothReader: ObservableObject {
     /// Runs system_profiler and parses its JSON into a BluetoothInfo, or nil on any failure (tool
     /// missing, timed out via DeviceTool, or an unexpected shape). Reuses DeviceTool.run for the
     /// hard timeout + concurrent pipe draining so a wedged helper can never hang the queue.
-    private static func read() -> BluetoothInfo? {
+    nonisolated private static func read() -> BluetoothInfo? {
         guard let data = DeviceTool.run("/usr/sbin/system_profiler", ["SPBluetoothDataType", "-json"]),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let arr = root["SPBluetoothDataType"] as? [[String: Any]],
@@ -145,7 +145,7 @@ final class BluetoothReader: ObservableObject {
     /// whatever it hands us (string or number), clamped to 0…100; nil when there's no usable value.
     /// Percentages are never negative, so we only accept leading digits (a "-" mid-string, or any
     /// non-numeric value like "Not Charging", yields nil rather than a bogus number).
-    private static func percent(_ any: Any?) -> Int? {
+    nonisolated private static func percent(_ any: Any?) -> Int? {
         if let n = any as? Int { return min(100, max(0, n)) }
         guard let s = any as? String else { return nil }
         let digits = s.prefix { $0.isNumber }

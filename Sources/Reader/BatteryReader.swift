@@ -192,7 +192,7 @@ final class BatteryReader: ObservableObject {
     /// The integer percent from `system_profiler`'s "Maximum Capacity: NN%" line, or nil on failure.
     /// Reuses DeviceTool.run for its timeout + concurrent pipe draining (system_profiler is fast,
     /// ~0.2 s, but this keeps a wedged process from ever hanging the health queue).
-    private static func readMaximumCapacity() -> Int? {
+    nonisolated private static func readMaximumCapacity() -> Int? {
         guard let data = DeviceTool.run("/usr/sbin/system_profiler", ["SPPowerDataType"]),
               let out = String(data: data, encoding: .utf8) else { return nil }
         for line in out.split(separator: "\n") where line.contains("Maximum Capacity") {

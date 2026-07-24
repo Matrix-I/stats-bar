@@ -29,7 +29,7 @@ final class MemoryReader: ObservableObject {
     // re-running ps. cachedTop is touched on the main thread only. Mirrors CPUReader.
     private var cachedTop: [MemoryProcess] = []
     private lazy var topRead = ThrottledBackgroundValue<[MemoryProcess]>(label: "MemoryReader.top", every: 2)
-    private static let topCount = 6
+    nonisolated private static let topCount = 6
 
     init() {
         refresh()
@@ -90,7 +90,7 @@ final class MemoryReader: ObservableObject {
     /// The `count` heaviest processes by resident memory: `ps -o rss` (KiB) sorted with `-m`
     /// (descending by memory). Like CPUReader's list, GUI apps get their NSRunningApplication name +
     /// icon via ProcessList. pid 0 is skipped.
-    private static func readTopProcesses(_ count: Int) -> [MemoryProcess] {
+    nonisolated private static func readTopProcesses(_ count: Int) -> [MemoryProcess] {
         guard let data = DeviceTool.run("/bin/ps", ["-A", "-c", "-o", "pid=,rss=,comm=", "-m"]),
               let out = String(data: data, encoding: .utf8) else { return [] }
         var result: [MemoryProcess] = []

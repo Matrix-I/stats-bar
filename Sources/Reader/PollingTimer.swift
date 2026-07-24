@@ -9,15 +9,16 @@
 
 import Foundation
 
+@MainActor
 final class PollingTimer {
     private var timer: Timer?
     private var interval: TimeInterval?
-    private let handler: () -> Void
+    private let handler: @MainActor () -> Void
 
     /// `handler` runs on the main run loop at each tick. Pass a `[weak self]` closure — PollingTimer is
     /// owned by the reader it calls back into, so a strong capture would retain-cycle. Nothing fires
     /// until `schedule(every:)`.
-    init(_ handler: @escaping () -> Void) {
+    init(_ handler: @MainActor @escaping () -> Void) {
         self.handler = handler
     }
 
@@ -28,7 +29,11 @@ final class PollingTimer {
         guard seconds != interval else { return }
         interval = seconds
         timer?.invalidate()
-        let t = Timer(timeInterval: seconds, repeats: true) { [handler] _ in handler() }
+        let t = Timer(timeInterval: seconds, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.handler()
+            }
+        }
         RunLoop.main.add(t, forMode: .common)
         timer = t
     }

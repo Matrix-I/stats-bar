@@ -49,7 +49,7 @@ final class CPUReader: ObservableObject {
     // re-running ps. cachedTop is touched on the main thread only.
     private var cachedTop: [ProcessSample] = []
     private lazy var topRead = ThrottledBackgroundValue<[ProcessSample]>(label: "CPUReader.top", every: 1)
-    private static let topCount = 6
+    nonisolated private static let topCount = 6
 
     private static let idleInterval: TimeInterval = 2   // menu-bar % only
     private static let activeInterval: TimeInterval = 1 // live readout while the panel is open
@@ -183,7 +183,7 @@ final class CPUReader: ObservableObject {
     /// accounting name, but for GUI apps we prefer NSRunningApplication's localized name and icon (so
     /// it reads "Google Chrome" with its icon, not a truncated "Google Chrome H") — again like Stats.
     /// pid 0 is skipped.
-    private static func readTopProcesses(_ count: Int) -> [ProcessSample] {
+    nonisolated private static func readTopProcesses(_ count: Int) -> [ProcessSample] {
         guard let data = DeviceTool.run("/bin/ps", ["-A", "-c", "-o", "pid=,pcpu=,comm=", "-r"]),
               let out = String(data: data, encoding: .utf8) else { return [] }
         var result: [ProcessSample] = []
