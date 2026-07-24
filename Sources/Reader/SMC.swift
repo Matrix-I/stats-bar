@@ -8,12 +8,13 @@
 import Foundation
 import IOKit
 
+@MainActor
 final class SMC {
     /// The one AppleSMC connection, shared by every reader (BatteryReader, CPUReader). There's a single
     /// SMC on the machine, so opening one user client and reusing it — rather than one per reader —
     /// keeps a single IOServiceOpen handle and one shared KeyInfo cache. Safe as a singleton because
     /// every caller touches it only from the main thread (see keyInfoCache).
-    nonisolated(unsafe) static let shared = SMC()
+    static let shared = SMC()
 
     private var conn: io_connect_t = 0
     private(set) var isAvailable = false

@@ -38,21 +38,8 @@ final class IOSDeviceReader: ObservableObject {
     /// a plug-in promptly.
     private static let keepWarmInterval: TimeInterval = 10
 
-    /// Whether the previous enumeration found a device. Touched only inside the doRefresh call chain
-    /// (listDevices), which the isBusy guard serializes — one doRefresh finishes before the next
-    /// starts — so no locking is needed. Gates the retry burst below: it's worth it only when a
-    /// device was around last cycle (ride out a transient usbmux drop during a reconnect); when idle
-    /// it just wastes forks and sleeps re-confirming "still nothing". Starts true so a device present
-    /// at launch is still caught by the burst; self-adjusts after the first cycle.
-    nonisolated(unsafe) private var sawDeviceLastCycle = true
-
-    /// Per-device identity (name / model / iOS version) keyed by UDID. These are constant for a given
-    /// device but each costs a separate `ideviceinfo` fork, so read them once on first sight and reuse
-    /// them — a steady-state refresh then spends its forks on the battery read, not on re-fetching
-    /// constants. Pruned to the currently-enumerated devices each refresh, so a reconnect (or a device
-    /// that becomes trusted) reads fresh. Touched only inside the doRefresh chain, which the isBusy
-    /// guard serializes (one doRefresh finishes before the next starts), so no locking is needed.
-    nonisolated(unsafe) private var infoCache: [String: (name: String, model: String, iosVersion: String)] = [:]
+    /// Dedicated worker actor encapsulating background enumeration & caching
+    private let worker = IOSDeviceWorker()
 
     /// Warns (macOS notification) when a device's battery runs hot. Touched only on the main thread,
     /// inside publish, so its threshold-crossing state stays single-threaded.
@@ -136,228 +123,12 @@ final class IOSDeviceReader: ObservableObject {
     func refresh(full: Bool = true) {
         guard !isBusy else { return }
         isBusy = true
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            self?.doRefresh(full: full)
-        }
-    }
-
-    /// libimobiledevice tools default to the USB transport; pass `-n` to reach a device that is only
-    /// available over Wi-Fi sync. Every read prefixes its args with this so network devices work.
-    nonisolated private func transportArgs(_ network: Bool) -> [String] { network ? ["-n"] : [] }
-
-    nonisolated private func infoValue(_ path: String, udid: String, key: String, network: Bool) -> String? {
-        guard let data = DeviceTool.run(path, transportArgs(network) + ["-u", udid, "-k", key]),
-              let str = String(data: data, encoding: .utf8) else { return nil }
-        let trimmed = str.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
-    }
-
-    /// One transport's UDID set — `-l` lists USB devices, `-n` lists network (Wi-Fi sync) devices.
-    nonisolated private func listOne(_ path: String, _ flag: String) -> Set<String> {
-        guard let data = DeviceTool.run(path, [flag]),
-              let s = String(data: data, encoding: .utf8) else { return [] }
-        return Set(s.split(whereSeparator: \.isNewline).map(String.init).filter { !$0.isEmpty })
-    }
-
-    /// Lists connected devices across BOTH transports, retrying a few times since the connection
-    /// (usbmux) can drop for a few seconds — especially when the device is locked or another app is
-    /// holding the lockdown session. A device that's plugged in over a charge-only cable (or a hub
-    /// that carries no data) never shows over USB, yet is still reachable over Wi-Fi when "Sync over
-    /// Wi-Fi" is on — so `-n` is enumerated too and those are read over the network transport. USB
-    /// wins when a device is reachable both ways: it's faster and always live while plugged in.
-    nonisolated private func listDevices(_ path: String) -> [(udid: String, network: Bool)] {
-        // Retry only when a device was present last cycle (ride out a reconnect blip); otherwise a
-        // single -l/-n pass. In steady-state idle the burst is pure waste — it never finds anything
-        // and the 1 Hz timer re-checks a second later, so a device appearing mid-idle is still picked
-        // up promptly without paying 5×(two forks + a 0.4s sleep) every cycle, forever.
-        let maxAttempts = sawDeviceLastCycle ? 5 : 1
-        for attempt in 0..<maxAttempts {
-            let usb = listOne(path, "-l")
-            let net = listOne(path, "-n")
-            if !usb.isEmpty || !net.isEmpty {
-                sawDeviceLastCycle = true
-                var out = usb.sorted().map { (udid: $0, network: false) }
-                out += net.subtracting(usb).sorted().map { (udid: $0, network: true) }
-                return out
-            }
-            if attempt < maxAttempts - 1 { Thread.sleep(forTimeInterval: 0.4) }
-        }
-        sawDeviceLastCycle = false
-        return []
-    }
-
-    /// Reads the lockdown battery domain (com.apple.mobile.battery). Unlike the diagnostics
-    /// registry, this is a plain lockdownd value read, not a "started" service, so it keeps working
-    /// while the device sits at the passcode lock screen — but it only exposes a coarse 0–100%
-    /// charge level and the charging flags, never the mAh / health / cycle-count that live behind
-    /// the (unlock-gated) diagnostics relay.
-    nonisolated private func readBatteryDomain(_ path: String, udid: String, network: Bool)
-        -> (pct: Double, isCharging: Bool, external: Bool, full: Bool)? {
-        guard let data = DeviceTool.run(path, transportArgs(network) + ["-u", udid, "-q", "com.apple.mobile.battery", "-x"]),
-              let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
-              let pct = intOrNil(plist["BatteryCurrentCapacity"]) else { return nil }
-        return (Double(pct),
-                plist["BatteryIsCharging"] as? Bool ?? false,
-                plist["ExternalConnected"] as? Bool ?? false,
-                plist["FullyCharged"] as? Bool ?? false)
-    }
-
-    /// Reads the battery IORegistry over the diagnostics relay. The gas-gauge data lives under
-    /// different IOKit classes depending on the device/OS: modern iPhones expose it as
-    /// `AppleSmartBattery`, but iPhone 7-era hardware on iOS 15 leaves that entry empty (the relay
-    /// answers Status=Success with no IORegistry payload) and carries the *same keys* under
-    /// `AppleARMPMUCharger` instead. Try both and take whichever actually returns a registry with
-    /// battery figures, so an empty `AppleSmartBattery` isn't mistaken for a locked device. Retries
-    /// since diagnostics also drops out temporarily. Returns nil only when neither class yields data
-    /// — the genuine "relay refused" (locked) case, handled by the caller.
-    nonisolated private func readBatteryRegistry(_ path: String, udid: String, network: Bool) -> [String: Any]? {
-        for attempt in 0..<3 {
-            for cls in ["AppleSmartBattery", "AppleARMPMUCharger"] {
-                if let raw = DeviceTool.run(path, transportArgs(network) + ["-u", udid, "ioregentry", cls]),
-                   let plist = try? PropertyListSerialization.propertyList(from: raw, options: [], format: nil) as? [String: Any],
-                   let reg = plist["IORegistry"] as? [String: Any],
-                   reg["AppleRawMaxCapacity"] != nil || reg["NominalChargeCapacity"] != nil
-                       || reg["DesignCapacity"] != nil || reg["CycleCount"] != nil {
-                    return reg
-                }
-            }
-            if attempt < 2 { Thread.sleep(forTimeInterval: 0.3) }
-        }
-        return nil
-    }
-
-    nonisolated private func readDeviceInfoPlist(_ path: String, udid: String, network: Bool) -> (name: String, model: String, iosVersion: String)? {
-        guard let data = DeviceTool.run(path, transportArgs(network) + ["-u", udid, "-x"]),
-              let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
-              let name = plist["DeviceName"] as? String, !name.isEmpty else { return nil }
-        let model = (plist["ProductType"] as? String) ?? ""
-        let version = (plist["ProductVersion"] as? String) ?? ""
-        return (name, model, version)
-    }
-
-    nonisolated private func doRefresh(full: Bool) {
-        guard let ideviceIdPath = DeviceTool.path("idevice_id"),
-              let ideviceInfoPath = DeviceTool.path("ideviceinfo"),
-              let diagnosticsPath = DeviceTool.path("idevicediagnostics") else {
+        let worker = self.worker
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let res = await worker.doRefresh(full: full)
             Task { @MainActor [weak self] in
-                self?.publish(devices: [], toolsMissing: true, status: nil)
+                self?.publish(devices: res.devices, toolsMissing: res.toolsMissing, status: res.status)
             }
-            return
-        }
-
-        let devicesList = listDevices(ideviceIdPath)
-        guard !devicesList.isEmpty else {
-            infoCache.removeAll()   // nothing on the bus — forget every cached identity
-            Task { @MainActor [weak self] in
-                self?.publish(devices: [], toolsMissing: false,
-                        status: "No iPhone/iPad found over USB or Wi-Fi.\nPlug in the cable (unlock + tap Trust), or turn on “Sync over Wi-Fi” in Finder.")
-            }
-            return
-        }
-        // Drop identities for devices no longer enumerated (unplugged, or trust changed), so a
-        // reconnect re-reads them; keyed on the current enumeration, matching how the reader treats
-        // "present" everywhere else.
-        let present = Set(devicesList.map(\.udid))
-        infoCache = infoCache.filter { present.contains($0.key) }
-
-        var results: [IOSDeviceInfo] = []
-        for (udid, network) in devicesList {
-            var dev = IOSDeviceInfo(id: udid)
-            dev.isNetwork = network
-
-            // Light pass (menu-bar glyph only): the glyph needs just charge % + charging, which the
-            // lightweight lockdown battery domain gives in a single fork — so skip the heavy
-            // diagnostics-relay ioregentry read here, letting it run only on the periodic full pass
-            // (see tick()). Only a device we've already fully read (identity cached) qualifies; a
-            // first-sight device falls through to the full read below so it gets its identity and a
-            // health baseline. publish() grafts the last-known health onto a light read just like a
-            // locked read, and never treats it as a new baseline.
-            if !full, let cached = infoCache[udid],
-               let batt = readBatteryDomain(ideviceInfoPath, udid: udid, network: network) {
-                dev.name = cached.name
-                dev.model = cached.model
-                dev.iosVersion = cached.iosVersion
-                dev.stateOfCharge = batt.pct
-                dev.isCharging = batt.isCharging
-                dev.externalConnected = batt.external
-                dev.fullyCharged = batt.full
-                dev.isLightRead = true
-                results.append(dev)
-                continue
-            }
-
-            // Identity is constant per device, so read it once and cache it — a steady-state refresh
-            // then skips these three ideviceinfo forks. We cache only a successful read (DeviceName
-            // non-nil), so a cache hit also means the lockdown handshake completed, i.e. the device is
-            // paired/trusted; a miss means we just tried and `named` reflects this cycle's attempt.
-            let trusted: Bool
-            if let cached = infoCache[udid] {
-                dev.name = cached.name
-                dev.model = cached.model
-                dev.iosVersion = cached.iosVersion
-                trusted = true
-            } else if let batch = readDeviceInfoPlist(ideviceInfoPath, udid: udid, network: network) {
-                dev.name = batch.name
-                dev.model = batch.model
-                dev.iosVersion = batch.iosVersion
-                trusted = true
-                if !batch.model.isEmpty, !batch.iosVersion.isEmpty {
-                    infoCache[udid] = batch
-                }
-            } else {
-                let named = infoValue(ideviceInfoPath, udid: udid, key: "DeviceName", network: network)
-                let model = infoValue(ideviceInfoPath, udid: udid, key: "ProductType", network: network) ?? ""
-                let version = infoValue(ideviceInfoPath, udid: udid, key: "ProductVersion", network: network) ?? ""
-                dev.name = named ?? udid
-                dev.model = model
-                dev.iosVersion = version
-                trusted = named != nil
-                if let named, !model.isEmpty, !version.isEmpty { infoCache[udid] = (named, model, version) }
-            }
-
-            if let reg = readBatteryRegistry(diagnosticsPath, udid: udid, network: network) {
-                dev.serial = reg["Serial"] as? String ?? ""
-                dev.designCapacity = intOrNil(reg["DesignCapacity"])
-                dev.maxCapacity = intOrNil(reg["AppleRawMaxCapacity"]) ?? intOrNil(reg["NominalChargeCapacity"])
-                dev.nominalChargeCapacity = intOrNil(reg["NominalChargeCapacity"])
-                dev.currentCapacity = intOrNil(reg["AppleRawCurrentCapacity"])
-                // Calibrated State of Charge iOS shows (the relative CurrentCapacity key, 0–100 with
-                // MaxCapacity == 100) — not the raw AppleRawCurrentCapacity / AppleRawMaxCapacity
-                // ratio, which reads a point or two low. Same fix as the Mac's BatteryReader.
-                if let relMax = intOrNil(reg["MaxCapacity"]), relMax > 0,
-                   let relCur = intOrNil(reg["CurrentCapacity"]) {
-                    dev.stateOfCharge = min(100, Double(relCur) / Double(relMax) * 100)
-                }
-                dev.cycleCount = intOrNil(reg["CycleCount"])
-                if let t = intOrNil(reg["Temperature"]) { dev.temperatureC = Double(t) / 100.0 }
-                if let v = intOrNil(reg["Voltage"]) { dev.voltageV = Double(v) / 1000.0 }
-                if let a = signedIntOrNil(reg["Amperage"]) { dev.amperageA = Double(a) / 1000.0 }
-                dev.isCharging = reg["IsCharging"] as? Bool ?? false
-                dev.externalConnected = reg["ExternalConnected"] as? Bool ?? false
-                dev.fullyCharged = reg["FullyCharged"] as? Bool ?? false
-                dev.capturedAt = Date()
-            } else if trusted {
-                // Diagnostics relay is refused while the device sits at the passcode lock screen
-                // (lockdownd returns PASSWORD_PROTECTED), so the detailed registry is unreadable.
-                // The device is still here and trusted, though — fall back to the lockdown battery
-                // domain for a live charge %, and let publish() keep the last-known health on
-                // screen (grafted from cache) rather than dropping to an error.
-                dev.isLocked = true
-                if let batt = readBatteryDomain(ideviceInfoPath, udid: udid, network: network) {
-                    dev.lockedChargePercent = batt.pct
-                    dev.isCharging = batt.isCharging
-                    dev.externalConnected = batt.external
-                    dev.fullyCharged = batt.full
-                }
-            } else {
-                dev.errorMessage = "Couldn't reach the device — unlock it and tap Trust."
-            }
-
-            results.append(dev)
-        }
-
-        Task { @MainActor [weak self] in
-            self?.publish(devices: results, toolsMissing: false, status: nil)
         }
     }
 
@@ -466,5 +237,180 @@ final class IOSDeviceReader: ObservableObject {
     private func seenWithin(_ window: TimeInterval, _ id: String, _ now: Date) -> Bool {
         guard let seen = lastSeenAt[id] else { return false }
         return now.timeIntervalSince(seen) < window
+    }
+}
+
+private actor IOSDeviceWorker {
+    private var sawDeviceLastCycle = true
+    private var infoCache: [String: (name: String, model: String, iosVersion: String)] = [:]
+
+    struct RefreshResult: Sendable {
+        let devices: [IOSDeviceInfo]
+        let toolsMissing: Bool
+        let status: String?
+    }
+
+    func doRefresh(full: Bool) -> RefreshResult {
+        guard let ideviceIdPath = DeviceTool.path("idevice_id"),
+              let ideviceInfoPath = DeviceTool.path("ideviceinfo"),
+              let diagnosticsPath = DeviceTool.path("idevicediagnostics") else {
+            return RefreshResult(devices: [], toolsMissing: true, status: nil)
+        }
+
+        let devicesList = listDevices(ideviceIdPath)
+        guard !devicesList.isEmpty else {
+            infoCache.removeAll()
+            return RefreshResult(devices: [], toolsMissing: false,
+                                 status: "No iPhone/iPad found over USB or Wi-Fi.\nPlug in the cable (unlock + tap Trust), or turn on “Sync over Wi-Fi” in Finder.")
+        }
+        let present = Set(devicesList.map(\.udid))
+        infoCache = infoCache.filter { present.contains($0.key) }
+
+        var results: [IOSDeviceInfo] = []
+        for (udid, network) in devicesList {
+            var dev = IOSDeviceInfo(id: udid)
+            dev.isNetwork = network
+
+            if !full, let cached = infoCache[udid],
+               let batt = readBatteryDomain(ideviceInfoPath, udid: udid, network: network) {
+                dev.name = cached.name
+                dev.model = cached.model
+                dev.iosVersion = cached.iosVersion
+                dev.stateOfCharge = batt.pct
+                dev.isCharging = batt.isCharging
+                dev.externalConnected = batt.external
+                dev.fullyCharged = batt.full
+                dev.isLightRead = true
+                results.append(dev)
+                continue
+            }
+
+            let trusted: Bool
+            if let cached = infoCache[udid] {
+                dev.name = cached.name
+                dev.model = cached.model
+                dev.iosVersion = cached.iosVersion
+                trusted = true
+            } else if let batch = readDeviceInfoPlist(ideviceInfoPath, udid: udid, network: network) {
+                dev.name = batch.name
+                dev.model = batch.model
+                dev.iosVersion = batch.iosVersion
+                trusted = true
+                if !batch.model.isEmpty, !batch.iosVersion.isEmpty {
+                    infoCache[udid] = batch
+                }
+            } else {
+                let named = infoValue(ideviceInfoPath, udid: udid, key: "DeviceName", network: network)
+                let model = infoValue(ideviceInfoPath, udid: udid, key: "ProductType", network: network) ?? ""
+                let version = infoValue(ideviceInfoPath, udid: udid, key: "ProductVersion", network: network) ?? ""
+                dev.name = named ?? udid
+                dev.model = model
+                dev.iosVersion = version
+                trusted = named != nil
+                if let named, !model.isEmpty, !version.isEmpty { infoCache[udid] = (named, model, version) }
+            }
+
+            if let reg = readBatteryRegistry(diagnosticsPath, udid: udid, network: network) {
+                dev.serial = reg["Serial"] as? String ?? ""
+                dev.designCapacity = intOrNil(reg["DesignCapacity"])
+                dev.maxCapacity = intOrNil(reg["AppleRawMaxCapacity"]) ?? intOrNil(reg["NominalChargeCapacity"])
+                dev.nominalChargeCapacity = intOrNil(reg["NominalChargeCapacity"])
+                dev.currentCapacity = intOrNil(reg["AppleRawCurrentCapacity"])
+                if let relMax = intOrNil(reg["MaxCapacity"]), relMax > 0,
+                   let relCur = intOrNil(reg["CurrentCapacity"]) {
+                    dev.stateOfCharge = min(100, Double(relCur) / Double(relMax) * 100)
+                }
+                dev.cycleCount = intOrNil(reg["CycleCount"])
+                if let t = intOrNil(reg["Temperature"]) { dev.temperatureC = Double(t) / 100.0 }
+                if let v = intOrNil(reg["Voltage"]) { dev.voltageV = Double(v) / 1000.0 }
+                if let a = signedIntOrNil(reg["Amperage"]) { dev.amperageA = Double(a) / 1000.0 }
+                dev.isCharging = reg["IsCharging"] as? Bool ?? false
+                dev.externalConnected = reg["ExternalConnected"] as? Bool ?? false
+                dev.fullyCharged = reg["FullyCharged"] as? Bool ?? false
+                dev.capturedAt = Date()
+            } else if trusted {
+                dev.isLocked = true
+                if let batt = readBatteryDomain(ideviceInfoPath, udid: udid, network: network) {
+                    dev.lockedChargePercent = batt.pct
+                    dev.isCharging = batt.isCharging
+                    dev.externalConnected = batt.external
+                    dev.fullyCharged = batt.full
+                }
+            } else {
+                dev.errorMessage = "Couldn't reach the device — unlock it and tap Trust."
+            }
+
+            results.append(dev)
+        }
+
+        return RefreshResult(devices: results, toolsMissing: false, status: nil)
+    }
+
+    private func transportArgs(_ network: Bool) -> [String] { network ? ["-n"] : [] }
+
+    private func infoValue(_ path: String, udid: String, key: String, network: Bool) -> String? {
+        guard let data = DeviceTool.run(path, transportArgs(network) + ["-u", udid, "-k", key]),
+              let str = String(data: data, encoding: .utf8) else { return nil }
+        let trimmed = str.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func listOne(_ path: String, _ flag: String) -> Set<String> {
+        guard let data = DeviceTool.run(path, [flag]),
+              let s = String(data: data, encoding: .utf8) else { return [] }
+        return Set(s.split(whereSeparator: \.isNewline).map(String.init).filter { !$0.isEmpty })
+    }
+
+    private func listDevices(_ path: String) -> [(udid: String, network: Bool)] {
+        let maxAttempts = sawDeviceLastCycle ? 5 : 1
+        for attempt in 0..<maxAttempts {
+            let usb = listOne(path, "-l")
+            let net = listOne(path, "-n")
+            if !usb.isEmpty || !net.isEmpty {
+                sawDeviceLastCycle = true
+                var out = usb.sorted().map { (udid: $0, network: false) }
+                out += net.subtracting(usb).sorted().map { (udid: $0, network: true) }
+                return out
+            }
+            if attempt < maxAttempts - 1 { Thread.sleep(forTimeInterval: 0.4) }
+        }
+        sawDeviceLastCycle = false
+        return []
+    }
+
+    private func readBatteryDomain(_ path: String, udid: String, network: Bool)
+        -> (pct: Double, isCharging: Bool, external: Bool, full: Bool)? {
+        guard let data = DeviceTool.run(path, transportArgs(network) + ["-u", udid, "-q", "com.apple.mobile.battery", "-x"]),
+              let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
+              let pct = intOrNil(plist["BatteryCurrentCapacity"]) else { return nil }
+        return (Double(pct),
+                plist["BatteryIsCharging"] as? Bool ?? false,
+                plist["ExternalConnected"] as? Bool ?? false,
+                plist["FullyCharged"] as? Bool ?? false)
+    }
+
+    private func readBatteryRegistry(_ path: String, udid: String, network: Bool) -> [String: Any]? {
+        for attempt in 0..<3 {
+            for cls in ["AppleSmartBattery", "AppleARMPMUCharger"] {
+                if let raw = DeviceTool.run(path, transportArgs(network) + ["-u", udid, "ioregentry", cls]),
+                   let plist = try? PropertyListSerialization.propertyList(from: raw, options: [], format: nil) as? [String: Any],
+                   let reg = plist["IORegistry"] as? [String: Any],
+                   reg["AppleRawMaxCapacity"] != nil || reg["NominalChargeCapacity"] != nil
+                       || reg["DesignCapacity"] != nil || reg["CycleCount"] != nil {
+                    return reg
+                }
+            }
+            if attempt < 2 { Thread.sleep(forTimeInterval: 0.3) }
+        }
+        return nil
+    }
+
+    private func readDeviceInfoPlist(_ path: String, udid: String, network: Bool) -> (name: String, model: String, iosVersion: String)? {
+        guard let data = DeviceTool.run(path, transportArgs(network) + ["-u", udid, "-x"]),
+              let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
+              let name = plist["DeviceName"] as? String, !name.isEmpty else { return nil }
+        let model = (plist["ProductType"] as? String) ?? ""
+        let version = (plist["ProductVersion"] as? String) ?? ""
+        return (name, model, version)
     }
 }
