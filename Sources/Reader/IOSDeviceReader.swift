@@ -44,7 +44,7 @@ final class IOSDeviceReader: ObservableObject {
     /// device was around last cycle (ride out a transient usbmux drop during a reconnect); when idle
     /// it just wastes forks and sleeps re-confirming "still nothing". Starts true so a device present
     /// at launch is still caught by the burst; self-adjusts after the first cycle.
-    private var sawDeviceLastCycle = true
+    nonisolated(unsafe) private var sawDeviceLastCycle = true
 
     /// Per-device identity (name / model / iOS version) keyed by UDID. These are constant for a given
     /// device but each costs a separate `ideviceinfo` fork, so read them once on first sight and reuse
@@ -52,7 +52,7 @@ final class IOSDeviceReader: ObservableObject {
     /// constants. Pruned to the currently-enumerated devices each refresh, so a reconnect (or a device
     /// that becomes trusted) reads fresh. Touched only inside the doRefresh chain, which the isBusy
     /// guard serializes (one doRefresh finishes before the next starts), so no locking is needed.
-    private var infoCache: [String: (name: String, model: String, iosVersion: String)] = [:]
+    nonisolated(unsafe) private var infoCache: [String: (name: String, model: String, iosVersion: String)] = [:]
 
     /// Warns (macOS notification) when a device's battery runs hot. Touched only on the main thread,
     /// inside publish, so its threshold-crossing state stays single-threaded.
@@ -143,9 +143,9 @@ final class IOSDeviceReader: ObservableObject {
 
     /// libimobiledevice tools default to the USB transport; pass `-n` to reach a device that is only
     /// available over Wi-Fi sync. Every read prefixes its args with this so network devices work.
-    private func transportArgs(_ network: Bool) -> [String] { network ? ["-n"] : [] }
+    nonisolated private func transportArgs(_ network: Bool) -> [String] { network ? ["-n"] : [] }
 
-    private func infoValue(_ path: String, udid: String, key: String, network: Bool) -> String? {
+    nonisolated private func infoValue(_ path: String, udid: String, key: String, network: Bool) -> String? {
         guard let data = DeviceTool.run(path, transportArgs(network) + ["-u", udid, "-k", key]),
               let str = String(data: data, encoding: .utf8) else { return nil }
         let trimmed = str.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -153,7 +153,7 @@ final class IOSDeviceReader: ObservableObject {
     }
 
     /// One transport's UDID set — `-l` lists USB devices, `-n` lists network (Wi-Fi sync) devices.
-    private func listOne(_ path: String, _ flag: String) -> Set<String> {
+    nonisolated private func listOne(_ path: String, _ flag: String) -> Set<String> {
         guard let data = DeviceTool.run(path, [flag]),
               let s = String(data: data, encoding: .utf8) else { return [] }
         return Set(s.split(whereSeparator: \.isNewline).map(String.init).filter { !$0.isEmpty })
@@ -165,7 +165,7 @@ final class IOSDeviceReader: ObservableObject {
     /// that carries no data) never shows over USB, yet is still reachable over Wi-Fi when "Sync over
     /// Wi-Fi" is on — so `-n` is enumerated too and those are read over the network transport. USB
     /// wins when a device is reachable both ways: it's faster and always live while plugged in.
-    private func listDevices(_ path: String) -> [(udid: String, network: Bool)] {
+    nonisolated private func listDevices(_ path: String) -> [(udid: String, network: Bool)] {
         // Retry only when a device was present last cycle (ride out a reconnect blip); otherwise a
         // single -l/-n pass. In steady-state idle the burst is pure waste — it never finds anything
         // and the 1 Hz timer re-checks a second later, so a device appearing mid-idle is still picked
@@ -191,7 +191,7 @@ final class IOSDeviceReader: ObservableObject {
     /// while the device sits at the passcode lock screen — but it only exposes a coarse 0–100%
     /// charge level and the charging flags, never the mAh / health / cycle-count that live behind
     /// the (unlock-gated) diagnostics relay.
-    private func readBatteryDomain(_ path: String, udid: String, network: Bool)
+    nonisolated private func readBatteryDomain(_ path: String, udid: String, network: Bool)
         -> (pct: Double, isCharging: Bool, external: Bool, full: Bool)? {
         guard let data = DeviceTool.run(path, transportArgs(network) + ["-u", udid, "-q", "com.apple.mobile.battery", "-x"]),
               let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
@@ -210,7 +210,7 @@ final class IOSDeviceReader: ObservableObject {
     /// battery figures, so an empty `AppleSmartBattery` isn't mistaken for a locked device. Retries
     /// since diagnostics also drops out temporarily. Returns nil only when neither class yields data
     /// — the genuine "relay refused" (locked) case, handled by the caller.
-    private func readBatteryRegistry(_ path: String, udid: String, network: Bool) -> [String: Any]? {
+    nonisolated private func readBatteryRegistry(_ path: String, udid: String, network: Bool) -> [String: Any]? {
         for attempt in 0..<3 {
             for cls in ["AppleSmartBattery", "AppleARMPMUCharger"] {
                 if let raw = DeviceTool.run(path, transportArgs(network) + ["-u", udid, "ioregentry", cls]),
@@ -226,7 +226,7 @@ final class IOSDeviceReader: ObservableObject {
         return nil
     }
 
-    private func readDeviceInfoPlist(_ path: String, udid: String, network: Bool) -> (name: String, model: String, iosVersion: String)? {
+    nonisolated private func readDeviceInfoPlist(_ path: String, udid: String, network: Bool) -> (name: String, model: String, iosVersion: String)? {
         guard let data = DeviceTool.run(path, transportArgs(network) + ["-u", udid, "-x"]),
               let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
               let name = plist["DeviceName"] as? String, !name.isEmpty else { return nil }
@@ -235,19 +235,23 @@ final class IOSDeviceReader: ObservableObject {
         return (name, model, version)
     }
 
-    private func doRefresh(full: Bool) {
+    nonisolated private func doRefresh(full: Bool) {
         guard let ideviceIdPath = DeviceTool.path("idevice_id"),
               let ideviceInfoPath = DeviceTool.path("ideviceinfo"),
               let diagnosticsPath = DeviceTool.path("idevicediagnostics") else {
-            publish(devices: [], toolsMissing: true, status: nil)
+            Task { @MainActor [weak self] in
+                self?.publish(devices: [], toolsMissing: true, status: nil)
+            }
             return
         }
 
         let devicesList = listDevices(ideviceIdPath)
         guard !devicesList.isEmpty else {
             infoCache.removeAll()   // nothing on the bus — forget every cached identity
-            publish(devices: [], toolsMissing: false,
-                    status: "No iPhone/iPad found over USB or Wi-Fi.\nPlug in the cable (unlock + tap Trust), or turn on “Sync over Wi-Fi” in Finder.")
+            Task { @MainActor [weak self] in
+                self?.publish(devices: [], toolsMissing: false,
+                        status: "No iPhone/iPad found over USB or Wi-Fi.\nPlug in the cable (unlock + tap Trust), or turn on “Sync over Wi-Fi” in Finder.")
+            }
             return
         }
         // Drop identities for devices no longer enumerated (unplugged, or trust changed), so a
@@ -352,7 +356,9 @@ final class IOSDeviceReader: ObservableObject {
             results.append(dev)
         }
 
-        publish(devices: results, toolsMissing: false, status: nil)
+        Task { @MainActor [weak self] in
+            self?.publish(devices: results, toolsMissing: false, status: nil)
+        }
     }
 
     private func publish(devices fresh: [IOSDeviceInfo], toolsMissing: Bool, status: String?) {

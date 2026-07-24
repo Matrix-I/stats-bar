@@ -56,7 +56,7 @@ final class AndroidDeviceReader: ObservableObject {
     private var capacityCache: [String: (max: Int?, design: Int?, cycle: Int?)] = [:]
     private var capacityLastAttempt: [String: Date] = [:]
     private var infoCache: [String: (name: String, manufacturer: String, version: String)] = [:]
-    private static let capacityRetryInterval: TimeInterval = 30
+    nonisolated private static let capacityRetryInterval: TimeInterval = 30
 
     init() {
         refresh()
@@ -88,7 +88,7 @@ final class AndroidDeviceReader: ObservableObject {
 
     /// Parses `adb devices -l` into (serial, state) pairs — state is "device", "unauthorized", or
     /// "offline". Unlike idevice_id, adb only needs one call (no separate USB-enumeration retry loop).
-    private func listDevices(_ path: String) -> [(serial: String, state: String)] {
+    nonisolated private func listDevices(_ path: String) -> [(serial: String, state: String)] {
         guard let data = DeviceTool.run(path, ["devices", "-l"]),
               let s = String(data: data, encoding: .utf8) else { return [] }
         return s.split(whereSeparator: \.isNewline)
@@ -101,7 +101,7 @@ final class AndroidDeviceReader: ObservableObject {
             }
     }
 
-    private func getprop(_ path: String, serial: String, key: String) -> String? {
+    nonisolated private func getprop(_ path: String, serial: String, key: String) -> String? {
         guard let data = DeviceTool.run(path, ["-s", serial, "shell", "getprop", key]),
               let str = String(data: data, encoding: .utf8) else { return nil }
         let trimmed = str.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -109,7 +109,7 @@ final class AndroidDeviceReader: ObservableObject {
     }
 
     /// `dumpsys battery` prints plain "  Key: value" lines — no plist/JSON on Android.
-    private func readBattery(_ path: String, serial: String) -> [String: String]? {
+    nonisolated private func readBattery(_ path: String, serial: String) -> [String: String]? {
         guard let data = DeviceTool.run(path, ["-s", serial, "shell", "dumpsys", "battery"]),
               let s = String(data: data, encoding: .utf8) else { return nil }
         var out: [String: String] = [:]
@@ -127,7 +127,7 @@ final class AndroidDeviceReader: ObservableObject {
     ///   "Capacity: 4000, Computed drain: ..., ..."   — OEM-declared rated/design capacity, under the
     ///                                                   "Estimated power use (mAh):" section
     /// Confirmed against a real device (Redmi Note 7): 3932 / 4000 mAh, matching its published spec.
-    private func readCapacity(_ path: String, serial: String) -> (max: Int?, design: Int?) {
+    nonisolated private func readCapacity(_ path: String, serial: String) -> (max: Int?, design: Int?) {
         // Filter on-device: `dumpsys batterystats` can be several MB of history, but only two lines
         // matter here, so grep them out on the phone (like readBroadcastCycleCount) instead of
         // transferring and string-splitting the whole dump in-process. grep preserves order, so the
@@ -158,7 +158,7 @@ final class AndroidDeviceReader: ObservableObject {
     /// (Android 14+) print it under one of several key spellings ("Charge cycles", "Cycle count",
     /// "Battery cycle count"), so scan for any key mentioning "cycle" with a positive integer value.
     /// Free — it reuses the already-parsed dumpsys dict, so it runs every refresh.
-    private func cycleCountFromDumpsys(_ bat: [String: String]) -> Int? {
+    nonisolated private func cycleCountFromDumpsys(_ bat: [String: String]) -> Int? {
         for (key, value) in bat where key.lowercased().contains("cycle") {
             if let n = Int(value.trimmingCharacters(in: .whitespaces)), n > 0 { return n }
         }
@@ -172,7 +172,7 @@ final class AndroidDeviceReader: ObservableObject {
     /// is several MB, but the sticky battery intent sits near the top and `grep | head -1`
     /// short-circuits on the first hit, so on-device generation stops in well under a tenth of a
     /// second. Cached by the caller, so it runs once per connection.
-    private func readBroadcastCycleCount(_ path: String, serial: String) -> Int? {
+    nonisolated private func readBroadcastCycleCount(_ path: String, serial: String) -> Int? {
         let probe = "dumpsys activity broadcasts 2>/dev/null | " +
                     "grep -o 'android.os.extra.CYCLE_COUNT=[0-9]*' | head -1"
         guard let data = DeviceTool.run(path, ["-s", serial, "shell", probe]),
@@ -188,7 +188,7 @@ final class AndroidDeviceReader: ObservableObject {
     /// on others (Xiaomi/MediaTek, where it lives behind a non-dumpable health HAL) — returns nil when
     /// unreadable, so the row simply stays hidden there. Cached by the caller (it barely changes), so
     /// this one `adb shell cat` runs once per connection rather than every second.
-    private func readSysfsCycleCount(_ path: String, serial: String) -> Int? {
+    nonisolated private func readSysfsCycleCount(_ path: String, serial: String) -> Int? {
         let probe = "for f in /sys/class/power_supply/battery/cycle_count " +
                     "/sys/class/power_supply/bms/cycle_count; do " +
                     "v=$(cat \"$f\" 2>/dev/null); [ -n \"$v\" ] && { echo \"$v\"; break; }; done"

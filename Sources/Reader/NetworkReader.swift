@@ -52,8 +52,8 @@ final class NetworkReader: NSObject, ObservableObject {
 
     private static let pingInterval: TimeInterval = 3
     private static let publicIPInterval: TimeInterval = 300
-    private static let pingHost = "1.1.1.1"
-    private static let pingHostV6 = "2606:4700:4700::1111"   // Cloudflare — fallback on IPv6-only links
+    nonisolated private static let pingHost = "1.1.1.1"
+    nonisolated private static let pingHostV6 = "2606:4700:4700::1111"   // Cloudflare — fallback on IPv6-only links
 
     override init() {
         super.init()
@@ -167,7 +167,7 @@ final class NetworkReader: NSObject, ObservableObject {
         }
     }
 
-    private func gatherLocal(full: Bool) -> LocalRead {
+    nonisolated private func gatherLocal(full: Bool) -> LocalRead {
         var r = LocalRead(full: full)
         // Always needed: the primary interface and its byte counters drive the menu-bar rate.
         r.bsd = NetworkInterface.primaryInterface()
@@ -310,7 +310,7 @@ final class NetworkReader: NSObject, ObservableObject {
     }
 }
 
-extension NetworkReader: CLLocationManagerDelegate {
+extension NetworkReader: @preconcurrency CLLocationManagerDelegate {
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         locationStatus = manager.authorizationStatus
         // Re-read Wi-Fi right away so the SSID shows the moment permission is granted.
