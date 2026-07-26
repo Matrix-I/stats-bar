@@ -340,7 +340,10 @@ private final class IOSDeviceWorker: @unchecked Sendable {
                     dev.stateOfCharge = min(100, Double(relCur) / Double(relMax) * 100)
                 }
                 dev.cycleCount = intOrNil(reg["CycleCount"])
-                if let t = intOrNil(reg["Temperature"]) { dev.temperatureC = Double(t) / 100.0 }
+                // Signed for the same reason as Amperage below — see BatteryReader. Reading a
+                // sub-zero temperature unsigned would also trip TemperatureAlerter's hot-battery
+                // warning, since the bogus value is far above the threshold.
+                if let t = signedIntOrNil(reg["Temperature"]) { dev.temperatureC = Double(t) / 100.0 }
                 if let v = intOrNil(reg["Voltage"]) { dev.voltageV = Double(v) / 1000.0 }
                 if let a = signedIntOrNil(reg["Amperage"]) { dev.amperageA = Double(a) / 1000.0 }
                 dev.isCharging = reg["IsCharging"] as? Bool ?? false

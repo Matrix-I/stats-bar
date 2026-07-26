@@ -132,7 +132,9 @@ final class BatteryReader: ObservableObject {
         }
 
         i.cycleCount = intOf(props["CycleCount"])
-        i.temperatureC = Double(intOf(props["Temperature"])) / 100.0
+        // Signed like Amperage below: a sub-zero battery (a cold car overnight) comes back as an
+        // unsigned 32-bit two's complement value, which read unsigned would land around 43 million °C.
+        i.temperatureC = Double(signedIntOf(props["Temperature"])) / 100.0
         i.voltageV = Double(intOf(props["Voltage"])) / 1000.0
         i.amperageA = Double(signedIntOf(props["Amperage"])) / 1000.0
         i.isCharging = props["IsCharging"] as? Bool ?? false
