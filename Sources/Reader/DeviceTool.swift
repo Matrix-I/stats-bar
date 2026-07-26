@@ -27,11 +27,11 @@ enum DeviceTool {
     /// concurrently — reading them sequentially (stdout then stderr) can deadlock if the child
     /// process fills the stderr buffer while we're still waiting for EOF on stdout.
     ///
-    /// Bails out if the tool overruns `toolTimeout`: unplugging the device mid-read can leave
+    /// Bails out if the tool overruns `timeout`: unplugging the device mid-read can leave
     /// idevicediagnostics / ideviceinfo / adb blocked indefinitely, which would otherwise hang the
     /// reader thread (waitUntilExit never returns), wedge its isBusy flag at true, and freeze the
     /// whole section until relaunch.
-    static func run(_ path: String, _ args: [String]) -> Data? {
+    static func run(_ path: String, _ args: [String], timeout: TimeInterval = toolTimeout) -> Data? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = args
@@ -45,11 +45,15 @@ enum DeviceTool {
             return nil
         }
 
+        final class DataContainer: @unchecked Sendable {
+            var data = Data()
+        }
+        let outContainer = DataContainer()
+
         let group = DispatchGroup()
-        var outData = Data()
         group.enter()
         DispatchQueue.global(qos: .userInitiated).async {
-            outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+            outContainer.data = outPipe.fileHandleForReading.readDataToEndOfFile()
             group.leave()
         }
         group.enter()
@@ -58,7 +62,12 @@ enum DeviceTool {
             group.leave()
         }
 
-        if group.wait(timeout: .now() + toolTimeout) == .timedOut {
+        if group.wait(timeout: .now() + timeout) == .timedOut {
+            // Never close the read ends here: the two work items above are blocked inside
+            // readDataToEndOfFile() on exactly these handles, and pulling the descriptor out from
+            // under a blocked read raises an uncatchable NSFileHandleOperationException (and risks
+            // the fd number being reused by another Pipe mid-read). Killing the child is the safe
+            // way to unblock them — its write ends close and both reads hit EOF.
             process.terminate()                          // SIGTERM
             if group.wait(timeout: .now() + 1) == .timedOut {
                 // The tool ignored SIGTERM (e.g. blocked in a usbmux syscall on a locked device).
@@ -74,6 +83,6 @@ enum DeviceTool {
             return nil
         }
         process.waitUntilExit()
-        return process.terminationStatus == 0 ? outData : nil
+        return process.terminationStatus == 0 ? outContainer.data : nil
     }
 }
