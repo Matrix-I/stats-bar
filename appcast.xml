@@ -7,6 +7,22 @@
     <language>en</language>
     <!-- APPCAST_ITEMS: update_appcast.sh prepends each release's <item> immediately below this line. -->
     <item>
+      <title>Version 2.11.0</title>
+      <pubDate>Sun, 26 Jul 2026 15:06:06 +0700</pubDate>
+      <sparkle:version>2.11.0</sparkle:version>
+      <sparkle:shortVersionString>2.11.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[# StatsBar v2.11.0 — VoiceOver labels and concurrency hardening
+
+- **The menu-bar items are readable by VoiceOver now.** Each one announces what its glyph is showing — "CPU 34%", "Battery 82%, charging", "Network up 1.2 MB/s, down 340 KB/s" — instead of being an unlabelled button. The label is refreshed only when the value actually changes, so an idle menu bar costs nothing extra.
+- **Thread-safety hardening across every reader.** The readers are now compiler-enforced main-thread types, and the iPhone/Android USB enumeration runs in dedicated worker actors that own their own caches. Nothing changes on screen; it removes a class of latent data races around the device caches, which were previously kept safe only by convention.
+- **Correct memory figures under translation.** The RAM buckets are now sized with the kernel page size rather than the process page size. Identical on native Apple Silicon and Intel Macs — it only differed for a translated process, where every bucket read four times too small.
+- The bundled `cocobat.py` CLI bounds its subprocess calls with a timeout instead of hanging indefinitely on a wedged `ioreg` or libimobiledevice call.
+
+_Not notarized — right-click → Open on first launch (or `xattr -dr com.apple.quarantine /Applications/StatsBar.app`)._]]></description>
+      <enclosure url="https://github.com/Matrix-I/stats-bar/releases/download/v2.11.0/StatsBar-v2.11.0.dmg" sparkle:edSignature="DT4uc8ZUoLg8j4UdMntc89Nb53B1YHUbXs+FaG6vmb/3n9+tEHQhZ67Z8ka/CwmIB1oIqQAtCjwik8krHZznBQ==" length="2407456" type="application/octet-stream" />
+    </item>
+    <item>
       <title>Version 2.10.0</title>
       <pubDate>Thu, 23 Jul 2026 23:41:43 +0700</pubDate>
       <sparkle:version>2.10.0</sparkle:version>
