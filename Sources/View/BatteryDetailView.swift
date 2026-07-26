@@ -9,7 +9,7 @@ import AppKit
 /// to `min(content height, cap)` instead of relying on ScrollView's own ideal size — which SwiftUI
 /// reports as ~0 in an auto-sizing container like MenuBarExtra(.window), making the window vanish.
 private struct PanelHeightPreferenceKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
+    static let defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         // Take the max, not the last value: the background GeometryReader emits a spurious 0 during
         // an early layout pass alongside the real content height, and `value = nextValue()` let that
@@ -23,7 +23,7 @@ private struct PanelHeightPreferenceKey: PreferenceKey {
 /// Height of the pinned footer (menu-bar settings + Refresh/Quit), measured the same way as the
 /// scroll content so it can be subtracted from the cap. Same max()-not-last reasoning as above.
 private struct FooterHeightPreferenceKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
+    static let defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())
     }

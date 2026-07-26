@@ -8,7 +8,8 @@
 
 import Foundation
 
-final class ThrottledBackgroundValue<T> {
+@MainActor
+final class ThrottledBackgroundValue<T: Sendable> {
     private let queue: DispatchQueue
     private let minInterval: TimeInterval
 
@@ -26,12 +27,12 @@ final class ThrottledBackgroundValue<T> {
     /// in-flight guard). `then` runs on the main thread with whatever `produce` returned — including a
     /// nil/empty T, so callers that must always run a side effect (e.g. Bluetooth's GATT refresh) can.
     /// Call from the main thread; the throttle state is not synchronized for concurrent callers.
-    func request(force: Bool = false, produce: @escaping () -> T, then: @escaping (T) -> Void) {
+    func request(force: Bool = false, produce: @Sendable @escaping () -> T, then: @MainActor @escaping (T) -> Void) {
         guard !inFlight, force || Date().timeIntervalSince(lastRun) >= minInterval else { return }
         inFlight = true
         queue.async { [weak self] in
             let value = produce()
-            DispatchQueue.main.async {
+            Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.lastRun = Date()
                 self.inFlight = false

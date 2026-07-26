@@ -6,7 +6,7 @@
 
 import Foundation
 
-struct AndroidDeviceInfo: Identifiable {
+struct AndroidDeviceInfo: Identifiable, Sendable {
     let id: String                // adb serial
     var name = ""
     var manufacturer = ""

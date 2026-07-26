@@ -21,7 +21,8 @@ import UserNotifications
 import AppKit
 import SwiftUI
 
-final class TemperatureAlerter: NSObject, UNUserNotificationCenterDelegate {
+@MainActor
+final class TemperatureAlerter: NSObject, @preconcurrency UNUserNotificationCenterDelegate {
     /// Notify once a battery reaches this. iOS itself already pauses charging when it runs hot;
     /// this is just a nudge to pull the cable sooner. Change here to retune the threshold.
     private let hotThresholdC: Double = 39.0
@@ -148,8 +149,10 @@ final class TemperatureAlerter: NSObject, UNUserNotificationCenterDelegate {
         hudPanel = panel
         // .common mode so the auto-dismiss still fires while a menu/popover is up (event-tracking).
         let t = Timer(timeInterval: 7, repeats: false) { [weak self] _ in
-            self?.hudPanel?.orderOut(nil)
-            self?.hudPanel = nil
+            Task { @MainActor [weak self] in
+                self?.hudPanel?.orderOut(nil)
+                self?.hudPanel = nil
+            }
         }
         RunLoop.main.add(t, forMode: .common)
         hudDismiss = t

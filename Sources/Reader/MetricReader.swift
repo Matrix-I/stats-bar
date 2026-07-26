@@ -6,6 +6,7 @@
 
 import Foundation
 
+@MainActor
 protocol MetricReader: AnyObject {
     /// Re-read all sources now (used on popover open and by the Refresh button).
     func refresh()

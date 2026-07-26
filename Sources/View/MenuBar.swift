@@ -28,6 +28,7 @@ private func drawChargingBolt(in bodyRect: NSRect, h: CGFloat) {
 /// blend modes instead rendered as a solid dark blob, because `.primary` didn't adapt
 /// and the compositing flattened wrong. SF Symbols only ship `.bolt` for the 100%
 /// variant, so drawing it ourselves is the only way to show a partial charging battery.
+@MainActor
 func batteryMenuBarImage(level: Double, charging: Bool, percent: Int? = nil) -> NSImage {
     let h: CGFloat = 13
     let lw: CGFloat = 1.2
@@ -114,6 +115,7 @@ func batteryMenuBarImage(level: Double, charging: Bool, percent: Int? = nil) -> 
 /// system won't auto-tint it — the rate text is instead drawn in a colour picked from the current
 /// appearance (white in dark mode, black in light). The image is rebuilt ~1 Hz, so it re-adapts
 /// shortly after a light/dark switch.
+@MainActor
 func networkMenuBarImage(up: Double, down: Double) -> NSImage {
     let font = NSFont.monospacedDigitSystemFont(ofSize: 8.5, weight: .regular)
     let isDark = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
@@ -151,6 +153,7 @@ func networkMenuBarImage(up: Double, down: Double) -> NSImage {
 /// Shared by the CPU (`cpu`) and RAM (`memorychip`) items. Monospaced digits and a fixed layout keep
 /// the item from jittering as the number changes width. The colour set on the text is ignored for a
 /// template — only its alpha matters.
+@MainActor
 func symbolPercentMenuBarImage(symbol: String, percent: Int) -> NSImage {
     let h: CGFloat = 13, symH: CGFloat = 12
     let text = "\(percent)%" as NSString
@@ -180,6 +183,7 @@ func symbolPercentMenuBarImage(symbol: String, percent: Int) -> NSImage {
 /// ourselves. The rune is the two long diagonals crossing at the centre, the vertical spine, and the
 /// two short connectors from the spine's tips out to the right-hand peaks; the diagonals run through
 /// the centre so tick→peak is a single straight segment.
+@MainActor
 func bluetoothMenuBarImage() -> NSImage {
     let h: CGFloat = 13
     let lw: CGFloat = 1.3
@@ -214,6 +218,7 @@ func bluetoothMenuBarImage() -> NSImage {
 /// Control Center menu-bar glyph: a small 2×2 grid ("dashboard of tiles") rendered as a template
 /// image so the system tints it white-on-dark / black-on-light like the other glyphs. This is the
 /// always-visible hub item; unlike the others it carries no live number, so it's set once at launch.
+@MainActor
 func controlCenterMenuBarImage() -> NSImage {
     let cfg = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
     let base = NSImage(systemSymbolName: "square.grid.2x2.fill", accessibilityDescription: "StatsBar")
@@ -239,6 +244,7 @@ func menuBarRate(_ bytesPerSec: Double) -> String {
 /// Mac + iPhone in one menu-bar item: laptop glyph + Mac battery, then iPhone glyph +
 /// iPhone battery, all composited into a SINGLE template image. Baking it avoids the
 /// HStack reordering the real MenuBarExtra applies to multi-view labels.
+@MainActor
 func dualMenuBarImage(macPct: Int, macCharging: Bool, phonePct: Int, phoneCharging: Bool,
                        phoneSymbol: String, showPercent: Bool) -> NSImage {
     let h: CGFloat = 13, symH: CGFloat = 10

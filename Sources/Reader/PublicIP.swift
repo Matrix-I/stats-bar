@@ -13,7 +13,7 @@ import Foundation
 
 enum PublicIP {
 
-    struct Result {
+    struct Result: Sendable {
         var ipv4: String?
         var ipv6: String?
         var countryCode: String?
@@ -22,16 +22,22 @@ enum PublicIP {
 
     /// Fetches all three values concurrently and calls back on a background queue. `timeout` bounds
     /// each request so a hung endpoint can't wedge the reader.
-    static func fetch(timeout: TimeInterval = 5, completion: @escaping (Result) -> Void) {
+    static func fetch(timeout: TimeInterval = 5, completion: @Sendable @escaping (Result) -> Void) {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = timeout
         config.waitsForConnectivity = false
         let session = URLSession(configuration: config)
 
-        let group = DispatchGroup()
-        var ipv4: String?, ipv6: String?, country: String?
+        final class IPResults: @unchecked Sendable {
+            var ipv4: String?
+            var ipv6: String?
+            var country: String?
+        }
+        let res = IPResults()
 
-        func text(_ url: String, _ store: @escaping (String) -> Void) {
+        let group = DispatchGroup()
+
+        func text(_ url: String, _ store: @Sendable @escaping (String) -> Void) {
             guard let u = URL(string: url) else { return }
             group.enter()
             session.dataTask(with: u) { data, _, _ in
@@ -42,9 +48,9 @@ enum PublicIP {
             }.resume()
         }
 
-        text("https://api.ipify.org") { ipv4 = $0 }
-        text("https://api6.ipify.org") { ipv6 = $0 }
-        text("https://ipinfo.io/country") { country = $0.uppercased() }
+        text("https://api.ipify.org") { val in res.ipv4 = val }
+        text("https://api6.ipify.org") { val in res.ipv6 = val }
+        text("https://ipinfo.io/country") { val in res.country = val.uppercased() }
 
         // Let the three tasks finish, then tear the session down. Not strictly a leak (a
         // completion-handler session with no delegate is reclaimed by ARC once its tasks end), but
@@ -53,10 +59,11 @@ enum PublicIP {
         session.finishTasksAndInvalidate()
 
         group.notify(queue: .global(qos: .utility)) {
+            let country = res.country
             // Guard against a garbage body being mistaken for a country code (e.g. an HTML error page).
             let cc = (country?.count == 2 && country!.allSatisfy { $0.isASCII && $0.isLetter }) ? country : nil
-            completion(Result(ipv4: ipv4, ipv6: ipv6, countryCode: cc,
-                              failed: ipv4 == nil && ipv6 == nil))
+            completion(Result(ipv4: res.ipv4, ipv6: res.ipv6, countryCode: cc,
+                              failed: res.ipv4 == nil && res.ipv6 == nil))
         }
     }
 }

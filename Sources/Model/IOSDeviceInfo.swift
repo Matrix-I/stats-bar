@@ -3,7 +3,7 @@
 
 import Foundation
 
-struct IOSDeviceInfo: Identifiable {
+struct IOSDeviceInfo: Identifiable, Sendable {
     let id: String               // UDID
     var name = ""
     var model = ""

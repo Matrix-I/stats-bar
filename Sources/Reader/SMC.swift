@@ -8,6 +8,7 @@
 import Foundation
 import IOKit
 
+@MainActor
 final class SMC {
     /// The one AppleSMC connection, shared by every reader (BatteryReader, CPUReader). There's a single
     /// SMC on the machine, so opening one user client and reusing it — rather than one per reader —
