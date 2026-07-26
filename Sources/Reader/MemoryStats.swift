@@ -27,7 +27,13 @@ enum MemoryStats {
         }
         guard kr == KERN_SUCCESS else { return nil }
 
-        let page = Double(vm_kernel_page_size)
+        // host_statistics64 counts KERNEL pages, so ask the kernel for its page size rather than
+        // using getpagesize()/vm_page_size (the *process* page size). They agree on native arm64 and
+        // x86_64, but a translated process reports 4 KiB while the kernel counts 16 KiB pages, which
+        // would under-report every bucket by 4×.
+        var pageSize: vm_size_t = 0
+        guard host_page_size(host, &pageSize) == KERN_SUCCESS, pageSize > 0 else { return nil }
+        let page = Double(pageSize)
         var info = MemoryInfo()
         info.total = total
         info.wired = bytes(stats.wire_count, page)
