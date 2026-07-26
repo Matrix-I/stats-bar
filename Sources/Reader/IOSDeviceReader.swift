@@ -38,7 +38,9 @@ final class IOSDeviceReader: ObservableObject {
     /// a plug-in promptly.
     private static let keepWarmInterval: TimeInterval = 10
 
-    /// Dedicated worker actor encapsulating background enumeration & caching
+    /// Runs the enumeration off the main thread and owns the caches that outlive a single refresh
+    /// (device identities, whether the last cycle saw anything). See the type for why it is a
+    /// queue-confined class rather than an actor.
     private let worker = IOSDeviceWorker()
 
     /// Warns (macOS notification) when a device's battery runs hot. Touched only on the main thread,
@@ -123,12 +125,12 @@ final class IOSDeviceReader: ObservableObject {
     func refresh(full: Bool = true) {
         guard !isBusy else { return }
         isBusy = true
+        // Inherits the main actor, so `publish` lands back here with no extra hop; the await only
+        // suspends this task while the worker queue does the blocking probes.
         let worker = self.worker
-        Task.detached(priority: .userInitiated) { [weak self] in
-            let res = await worker.doRefresh(full: full)
-            Task { @MainActor [weak self] in
-                self?.publish(devices: res.devices, toolsMissing: res.toolsMissing, status: res.status)
-            }
+        Task { [weak self] in
+            let res = await worker.refresh(full: full)
+            self?.publish(devices: res.devices, toolsMissing: res.toolsMissing, status: res.status)
         }
     }
 
@@ -238,7 +240,18 @@ final class IOSDeviceReader: ObservableObject {
     }
 }
 
-private actor IOSDeviceWorker {
+/// Owns the libimobiledevice enumeration and the caches that survive between refreshes.
+///
+/// Deliberately NOT an actor: every probe below blocks its thread — DeviceTool.run waits on a child
+/// process for up to the tool timeout, and the retry loops sleep between attempts — and a worst-case
+/// pass can sit there for tens of seconds. An actor runs on Swift's cooperative thread pool, which is
+/// only as wide as the core count and whose threads must never block; parking one there starves every
+/// other async task in the process. A dedicated serial queue gives the same mutual exclusion (all
+/// state below is touched only from `queue`, which is what makes the @unchecked Sendable sound) on a
+/// thread we own and are free to block.
+private final class IOSDeviceWorker: @unchecked Sendable {
+    private let queue = DispatchQueue(label: "StatsBar.IOSDeviceWorker", qos: .userInitiated)
+
     private var sawDeviceLastCycle = true
     private var infoCache: [String: (name: String, model: String, iosVersion: String)] = [:]
 
@@ -248,7 +261,15 @@ private actor IOSDeviceWorker {
         let status: String?
     }
 
-    func doRefresh(full: Bool) -> RefreshResult {
+    /// Runs one enumeration on the worker queue. The caller's task suspends — it does not block — so
+    /// the main actor stays responsive while the probes run.
+    func refresh(full: Bool) async -> RefreshResult {
+        await withCheckedContinuation { continuation in
+            queue.async { continuation.resume(returning: self.doRefresh(full: full)) }
+        }
+    }
+
+    private func doRefresh(full: Bool) -> RefreshResult {
         guard let ideviceIdPath = DeviceTool.path("idevice_id"),
               let ideviceInfoPath = DeviceTool.path("ideviceinfo"),
               let diagnosticsPath = DeviceTool.path("idevicediagnostics") else {

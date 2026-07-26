@@ -49,7 +49,9 @@ final class AndroidDeviceReader: ObservableObject {
     private static let staleGraceGone: TimeInterval = 5
     private static let staleGraceUnreadable: TimeInterval = 30
 
-    /// Dedicated worker actor encapsulating background enumeration & caching
+    /// Runs the enumeration off the main thread and owns the caches that outlive a single refresh
+    /// (device identities, learned battery capacity). See the type for why it is a queue-confined
+    /// class rather than an actor.
     private let worker = AndroidDeviceWorker()
 
     init() {
@@ -75,12 +77,12 @@ final class AndroidDeviceReader: ObservableObject {
     func refresh() {
         guard !isBusy else { return }
         isBusy = true
+        // Inherits the main actor, so `publish` lands back here with no extra hop; the await only
+        // suspends this task while the worker queue does the blocking probes.
         let worker = self.worker
-        Task.detached(priority: .userInitiated) { [weak self] in
-            let res = await worker.doRefresh()
-            Task { @MainActor [weak self] in
-                self?.publish(devices: res.devices, toolsMissing: res.toolsMissing, status: res.status)
-            }
+        Task { [weak self] in
+            let res = await worker.refresh()
+            self?.publish(devices: res.devices, toolsMissing: res.toolsMissing, status: res.status)
         }
     }
 
@@ -159,7 +161,15 @@ final class AndroidDeviceReader: ObservableObject {
     }
 }
 
-private actor AndroidDeviceWorker {
+/// Owns the adb enumeration and the caches that survive between refreshes. Not an actor, for the same
+/// reason as IOSDeviceWorker: every probe blocks on a child process (adb can sit at DeviceTool's full
+/// timeout when a phone is locked or the cable is yanked mid-read), and blocking a Swift cooperative
+/// thread starves the shared pool. A dedicated serial queue gives the same mutual exclusion — all the
+/// state below is touched only from `queue`, which is what makes the @unchecked Sendable sound — on a
+/// thread we own and are free to block.
+private final class AndroidDeviceWorker: @unchecked Sendable {
+    private let queue = DispatchQueue(label: "StatsBar.AndroidDeviceWorker", qos: .userInitiated)
+
     private var capacityCache: [String: (max: Int?, design: Int?, cycle: Int?)] = [:]
     private var capacityLastAttempt: [String: Date] = [:]
     private var infoCache: [String: (name: String, manufacturer: String, version: String)] = [:]
@@ -171,7 +181,15 @@ private actor AndroidDeviceWorker {
         let status: String?
     }
 
-    func doRefresh() -> RefreshResult {
+    /// Runs one enumeration on the worker queue. The caller's task suspends — it does not block — so
+    /// the main actor stays responsive while the probes run.
+    func refresh() async -> RefreshResult {
+        await withCheckedContinuation { continuation in
+            queue.async { continuation.resume(returning: self.doRefresh()) }
+        }
+    }
+
+    private func doRefresh() -> RefreshResult {
         guard let adbPath = DeviceTool.path("adb") else {
             return RefreshResult(devices: [], toolsMissing: true, status: nil)
         }
