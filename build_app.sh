@@ -56,10 +56,14 @@ cat > "$APP.app/Contents/Info.plist" <<'PLIST'
     <key>CFBundleName</key>             <string>StatsBar</string>
     <key>CFBundleIconFile</key>         <string>AppIcon</string>
     <key>CFBundlePackageType</key>      <string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>2.10.0</string>
-    <!-- Sparkle compares CFBundleVersion between the running app and the appcast to decide whether an
-         update is newer, so it must be bumped alongside CFBundleShortVersionString on every release. -->
-    <key>CFBundleVersion</key>          <string>2.10.0</string>
+    <!-- Version. Between releases the marketing version carries a -SNAPSHOT suffix, so a locally built
+         app is never mistaken for a shipped one. Cutting release X.Y.Z means: drop the suffix here,
+         release, then bump to the next X.(Y+1).0-SNAPSHOT in the following commit.
+         CFBundleVersion deliberately carries NO suffix — Apple requires one to three period-separated
+         integers there, and Sparkle compares it against the appcast to decide whether an update is
+         newer, so it is bumped (without the suffix) at the same time. -->
+    <key>CFBundleShortVersionString</key><string>2.11.0-SNAPSHOT</string>
+    <key>CFBundleVersion</key>          <string>2.11.0</string>
     <key>LSMinimumSystemVersion</key>   <string>13.0</string>
     <key>LSUIElement</key>              <true/>
     <!-- Sparkle auto-update. SUFeedURL is the appcast (kept in the repo, served raw from GitHub);
