@@ -35,9 +35,13 @@ def c(txt, color):
     return f"{color}{txt}{RESET}" if USE_COLOR else str(txt)
 
 
-def run(cmd):
-    """Run a command, return stdout as bytes, raise on error."""
-    return subprocess.run(cmd, capture_output=True, check=True).stdout
+def run(cmd, timeout=5):
+    """Run a command safely, return stdout as bytes or empty bytes on error/timeout."""
+    try:
+        res = subprocess.run(cmd, capture_output=True, timeout=timeout)
+        return res.stdout if res.returncode == 0 else b""
+    except (subprocess.SubprocessError, OSError):
+        return b""
 
 
 def fix_signed(v):
@@ -87,9 +91,8 @@ def show(v, fmt="{}"):
 # -------------------------------------------------------------- Mac reader ---
 
 def read_mac():
-    try:
-        out = run(["ioreg", "-arn", "AppleSmartBattery"])
-    except (FileNotFoundError, subprocess.CalledProcessError):
+    out = run(["ioreg", "-arn", "AppleSmartBattery"])
+    if not out:
         sys.exit("Failed to run ioreg — this script only works on macOS.")
 
     entries = plistlib.loads(out) if out.strip() else []
