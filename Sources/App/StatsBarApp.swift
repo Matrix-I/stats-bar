@@ -88,6 +88,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var showIPhoneMenuBar: Bool = false
     private var showAndroidMenuBar: Bool = false
     private var defaultsObserver: NSObjectProtocol?
+    /// Re-entrancy guard for refreshLabels. Assigning NSStatusItem.isVisible makes AppKit persist the
+    /// item's autosave position to UserDefaults, which posts UserDefaults.didChangeNotification; the
+    /// observer below is registered with `queue: .main` and therefore runs *synchronously* when the post
+    /// happens on the main thread, calling straight back into refreshLabels. Without this guard that
+    /// recurses until the main thread's stack is exhausted — the crash signature is EXC_BAD_ACCESS
+    /// "Thread stack size exceeded due to excessive recursion" repeating through
+    /// -[NSSceneStatusItem _setVisible:temporary:] → refreshLabels(). Main-thread only, so a plain Bool
+    /// is enough. Dropping a nested call loses nothing: the observer still refreshes the settings cache
+    /// before this returns, and the 1 Hz labelPoll applies it on the next tick.
+    private var isRefreshingLabels = false
 
     /// Fires on clicks outside the app so an open popover dismisses like a normal menu-bar popover.
     private var outsideClickMonitor: Any?
@@ -264,10 +274,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func refreshLabels() {
+        // See isRefreshingLabels: setting isVisible below re-enters this method through the
+        // UserDefaults observer, and unguarded that recursion overflows the stack.
+        guard !isRefreshingLabels else { return }
+        isRefreshingLabels = true
+        defer { isRefreshingLabels = false }
+
         // Per-item visibility + live glyphs, driven off the Control Center's "show<Item>Item" toggles.
         // Read the visibility flag the same lenient way as the battery glyph flags (absent key ⇒
-        // shown) so a fresh install shows every item; setting isVisible is a no-op when unchanged, so
-        // doing it here just makes a toggle take effect within ~1 s. The Control Center is never hidden.
+        // shown) so a fresh install shows every item; doing it here makes a toggle take effect within
+        // ~1 s. The Control Center is never hidden.
         //
         // We intentionally do NOT close a hidden item's popover: the overview deliberately opens a
         // hidden metric's detail anchored to the hub button (see presentDetail), and closing it on the
@@ -277,7 +293,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for metric in StatMetric.allCases {
             guard let m = metricItems[metric] else { continue }
             let visible = metricVisibility[metric] ?? true
-            m.statusItem.isVisible = visible
+            // Assign only on a real change. The setter is NOT free when the value is unchanged:
+            // NSSceneStatusItem routes every assignment through -[NSStatusItemScene updateSettings:]
+            // and re-persists the item's autosave position, so an unconditional write at 1 Hz posts a
+            // UserDefaults change (and wakes the observer) every single tick.
+            if m.statusItem.isVisible != visible {
+                m.statusItem.isVisible = visible
+            }
             // Let the reader stop polling when its item is hidden (and its popover closed): with
             // nothing on screen there's no reason to keep reading. Idempotent — the reader no-ops when
             // the flag is unchanged — so calling it every ~1 Hz tick is cheap.
