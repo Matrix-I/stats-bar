@@ -7,6 +7,24 @@
     <language>en</language>
     <!-- APPCAST_ITEMS: update_appcast.sh prepends each release's <item> immediately below this line. -->
     <item>
+      <title>Version 2.11.1</title>
+      <pubDate>Mon, 27 Jul 2026 11:01:35 +0700</pubDate>
+      <sparkle:version>2.11.1</sparkle:version>
+      <sparkle:shortVersionString>2.11.1</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[# StatsBar v2.11.1 — crash fix
+
+A patch release for one serious bug: **toggling any menu-bar item in the Control Center crashed the app.**
+
+- **Fixed: the app crashed when you switched a menu-bar item on or off.** Flipping Battery, CPU, RAM, Network or Bluetooth in the Control Center could kill the app outright. Writing the toggle's setting posted a preferences-change notification, whose handler assigned `NSStatusItem.isVisible`; AppKit persists the item's position when you do that, which posted the same notification again — an unbounded recursion that exhausted the main thread's stack. The refresh path now guards against re-entry and only writes `isVisible` on a real change. Present since v2.10.0.
+- **Fixed: a below-zero battery temperature read as a wildly large positive number.** IOKit reports negative values in the Temperature key as unsigned two's complement, so −5 °C came through as 42,949,667.96 °C — which also made the temperature alert fire about an overheating battery on a freezing one. Positive readings were never affected.
+
+The unconditional `isVisible` write also meant every visible item rewrote a preference once a second; that write is gone, so an idle menu bar now touches user defaults not at all.
+
+_Not notarized — right-click → Open on first launch (or `xattr -dr com.apple.quarantine /Applications/StatsBar.app`)._]]></description>
+      <enclosure url="https://github.com/Matrix-I/stats-bar/releases/download/v2.11.1/StatsBar-v2.11.1.dmg" sparkle:edSignature="twobH6vj45AcGtMYHCzCeBw+vTPjDHEIeR/1cabkLi6PBLWFv0QG4ZQ6pl8zm89Ei0TuYSy43SmfKIW/VjJ9Dg==" length="2421163" type="application/octet-stream" />
+    </item>
+    <item>
       <title>Version 2.11.0</title>
       <pubDate>Sun, 26 Jul 2026 15:06:06 +0700</pubDate>
       <sparkle:version>2.11.0</sparkle:version>
