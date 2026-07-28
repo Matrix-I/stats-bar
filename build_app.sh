@@ -25,8 +25,16 @@ echo "🔨 Compiling $APP (Sources/*.swift) ..."
 # (icon_gen.swift, screeninfo.swift) are standalone tools and are deliberately excluded.
 # -F/-framework link Sparkle; the added @rpath resolves it from Contents/Frameworks at runtime.
 SOURCES=$(find Sources -name '*.swift')
+# -target pins the deployment target. WITHOUT it swiftc defaults to the build machine's OS, which
+# (a) produces a binary that won't load on anything older, contradicting the LSMinimumSystemVersion
+# declared below, and (b) silently disables availability checking — a macOS 14+ API then compiles
+# without a warning and crashes at runtime. 13.0 is the lowest this tree builds at as-is: macOS 12
+# is blocked by NSHostingView.sizingOptions, macOS 11 additionally by kIOMainPortDefault. Keep this
+# in step with LSMinimumSystemVersion. The arch comes from uname so that building on an Intel Mac
+# still produces a native x86_64 binary rather than cross-compiling to arm64.
+TARGET="$(uname -m)-apple-macos13.0"
 # shellcheck disable=SC2086
-swiftc -O -parse-as-library $SOURCES \
+swiftc -O -parse-as-library -target "$TARGET" $SOURCES \
     -F "$PWD/Frameworks" -framework Sparkle \
     -Xlinker -rpath -Xlinker "@executable_path/../Frameworks" \
     -o "$APP"
