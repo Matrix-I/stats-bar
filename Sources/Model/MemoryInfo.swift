@@ -36,6 +36,7 @@ struct MemoryInfo {
     var app: UInt64 = 0          // bytes — "App Memory": resident anonymous, non-purgeable
     var wired: UInt64 = 0        // bytes — wired down (kernel / pinned)
     var compressed: UInt64 = 0   // bytes — held by the VM compressor
+    var cached: UInt64 = 0       // bytes — "Cached Files": file-backed + purgeable, reclaimable
     var swapUsed: UInt64 = 0     // bytes — swap in use
     var pressure: MemoryPressure = .normal   // authoritative macOS pressure level (set by the reader)
 
@@ -47,15 +48,17 @@ struct MemoryInfo {
     // assumption ever to break, trapping beats a silent wrap.
     var used: UInt64 { app + wired + compressed }
 
-    // Everything not in the three "used" buckets: truly-free + speculative + cached files. Guarded
-    // because `used` can edge slightly past `total` — a wired anonymous page is counted in both
-    // `wired` and `app`, and the read isn't a single atomic snapshot.
-    var free: UInt64 { total > used ? total - used : 0 }
+    // Everything left once the three "used" buckets and the file cache are accounted for: truly-free
+    // plus speculative pages. Guarded because `used + cached` can edge past `total` — a wired
+    // anonymous page is counted in both `wired` and `app`, and the read isn't a single atomic
+    // snapshot. Cached files used to land here, which is why Free read several GB too high.
+    var free: UInt64 { total > used + cached ? total - used - cached : 0 }
 
     // Fractions of total physical RAM (0…1) for the segmented bar. Free is drawn as the remainder.
     var appFraction: Double        { fraction(app) }
     var wiredFraction: Double      { fraction(wired) }
     var compressedFraction: Double { fraction(compressed) }
+    var cachedFraction: Double     { fraction(cached) }
 
     // Used share of physical RAM (0…1) and the same figure as a percentage, for the usage ring.
     var usedFraction: Double { fraction(used) }

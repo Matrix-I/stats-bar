@@ -22,6 +22,7 @@ struct MemoryDetailView: View {
     static let appColor        = Color.primary
     static let wiredColor      = Color.orange
     static let compressedColor = Color.yellow
+    static let cachedColor     = Color.blue.opacity(0.6)
     static let freeColor       = Color.gray.opacity(0.45)
 
     var body: some View {
@@ -145,6 +146,7 @@ struct MemoryDetailView: View {
             LegendRow(color: Self.appColor, label: "App", value: fmtGB(info.app))
             LegendRow(color: Self.wiredColor, label: "Wired", value: fmtGB(info.wired))
             LegendRow(color: Self.compressedColor, label: "Compressed", value: fmtGB(info.compressed))
+            LegendRow(color: Self.cachedColor, label: "Cached Files", value: fmtGB(info.cached))
             LegendRow(color: Self.freeColor, label: "Free", value: fmtGB(info.free))
             InfoRow(label: "Swap", value: fmtGB(info.swapUsed))
         }
@@ -170,27 +172,29 @@ struct MemoryDetailView: View {
     }
 }
 
-/// The proportional App | Wired | Compressed | Free bar. The whole track is painted the Free
-/// colour, then the three "used" segments overlay from the left — so sub-pixel rounding never
-/// leaves a transparent gap at the right edge.
+/// The proportional App | Wired | Compressed | Cached | Free bar. The whole track is painted the
+/// Free colour, then the other segments overlay from the left — so sub-pixel rounding never leaves
+/// a transparent gap at the right edge.
 private struct MemoryBar: View {
     let mem: MemoryInfo
 
     var body: some View {
         GeometryReader { geo in
             let w = geo.size.width
-            // Clamp the three "used" segments cumulatively so they can never exceed the track: if
-            // the fractions ever sum past 1 (a wired page double-counted in App, or a non-atomic
-            // read), the last segment would otherwise spill past the edge and get silently clipped.
+            // Clamp the segments cumulatively so they can never exceed the track: if the fractions
+            // ever sum past 1 (a wired page double-counted in App, or a non-atomic read), the last
+            // segment would otherwise spill past the edge and get silently clipped.
             let appW  = min(w * mem.appFraction, w)
             let wiredW = min(w * mem.wiredFraction, w - appW)
             let compW  = min(w * mem.compressedFraction, w - appW - wiredW)
+            let cachedW = min(w * mem.cachedFraction, w - appW - wiredW - compW)
             ZStack(alignment: .leading) {
                 Rectangle().fill(MemoryDetailView.freeColor)
                 HStack(spacing: 0) {
                     Rectangle().fill(MemoryDetailView.appColor).frame(width: appW)
                     Rectangle().fill(MemoryDetailView.wiredColor).frame(width: wiredW)
                     Rectangle().fill(MemoryDetailView.compressedColor).frame(width: compW)
+                    Rectangle().fill(MemoryDetailView.cachedColor).frame(width: cachedW)
                     Spacer(minLength: 0)
                 }
             }
