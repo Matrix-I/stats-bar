@@ -142,6 +142,7 @@ final class CPUReader: ObservableObject {
             if pCoreCount > 0, eCoreCount + pCoreCount <= cur.count {
                 out.performancePercent = perCoreBusy[eCoreCount..<(eCoreCount + pCoreCount)].reduce(0, +) / Double(pCoreCount)
             }
+            out.perCoreBusy = perCoreBusy
         }
         prevTicks = cur
 

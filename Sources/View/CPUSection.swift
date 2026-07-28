@@ -36,6 +36,8 @@ struct CPUDetailView: View {
 
             details
 
+            cores
+
             frequency
 
             topProcesses
@@ -152,6 +154,40 @@ struct CPUDetailView: View {
 
     private func pct(_ v: Double) -> String { String(format: "%.0f%%", v) }
 
+    // MARK: Cores
+
+    /// One mini-bar per logical core — the view MenuMeters and iStat Menus are known for, and the
+    /// only place the load's actual shape is visible: two cluster averages can't tell a single pegged
+    /// core apart from every core at a third. The reader already computes this array to derive those
+    /// averages, so the section costs no extra sampling. Four columns keeps an 8- or 10-core chip to
+    /// two rows; colour carries the cluster (matching the DETAILS rows), so no per-cell label is
+    /// needed to tell efficiency from performance.
+    @ViewBuilder
+    private var cores: some View {
+        if !info.perCoreBusy.isEmpty {
+            SectionCaption("CORES")
+            LazyVGrid(columns: Array(repeating: GridItem(spacing: 8), count: 4), spacing: 8) {
+                ForEach(Array(info.perCoreBusy.enumerated()), id: \.offset) { idx, busy in
+                    VStack(spacing: 3) {
+                        BarView(pct: busy, color: coreColor(idx))
+                        Text("\(Int(busy.rounded()))%")
+                            .font(.system(size: 9))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Efficiency cores are the low indices, performance cores follow — see CPUReader's header for how
+    /// that ordering was confirmed. A chip that reports no cluster split (Intel) gets one flat colour
+    /// rather than a misleading teal/purple division.
+    private func coreColor(_ idx: Int) -> Color {
+        guard info.efficiencyCoreCount > 0, info.performanceCoreCount > 0 else { return CPUPalette.user }
+        return idx < info.efficiencyCoreCount ? CPUPalette.efficiency : CPUPalette.performance
+    }
+
     // MARK: Frequency
 
     @ViewBuilder
@@ -186,7 +222,7 @@ struct CPUDetailView: View {
             VStack(spacing: 6) {
                 ProcessTableHeader()
                 ForEach(info.topProcesses) { p in
-                    ProcessRow(icon: p.icon, name: p.name,
+                    ProcessRow(pid: p.pid, icon: p.icon, name: p.name,
                                value: String(format: "%.1f%%", p.cpuPercent))
                 }
             }

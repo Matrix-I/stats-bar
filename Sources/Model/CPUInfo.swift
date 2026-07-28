@@ -29,6 +29,12 @@ struct CPUInfo {
     var efficiencyPercent: Double? = nil
     var performancePercent: Double? = nil
 
+    // Busy% of every logical core, in host_processor_info order — efficiency cores occupy the low
+    // indices, performance cores follow (CPUReader documents how that was verified). Empty until the
+    // first tick delta is available. This is the array the cluster averages above are reduced from,
+    // so publishing it costs no extra sampling.
+    var perCoreBusy: [Double] = []
+
     var coreCount = 0
     var efficiencyCoreCount = 0
     var performanceCoreCount = 0

@@ -165,7 +165,8 @@ struct MemoryDetailView: View {
             VStack(spacing: 6) {
                 ProcessTableHeader(valueLabel: "Memory")
                 ForEach(info.topProcesses) { p in
-                    ProcessRow(icon: p.icon, name: p.name, value: fmtProcessMemory(p.bytes))
+                    ProcessRow(pid: p.pid, icon: p.icon, name: p.name,
+                               value: fmtProcessMemory(p.bytes))
                 }
             }
         }

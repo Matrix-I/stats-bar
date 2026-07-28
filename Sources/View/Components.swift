@@ -97,6 +97,29 @@ struct RingGauge<Center: View>: View {
     }
 }
 
+/// The right-aligned value half of a detail row: medium weight, monospaced digits, one line — plus
+/// text selection and a right-click "Copy". Battery and device serials, MAC and IP addresses and DNS
+/// resolvers are exactly the values people open a hardware inspector in order to paste somewhere
+/// else, and every one of them used to be a dead pixel. Factored out so all ~50 value rows across
+/// the panels behave the same way instead of each re-styling its own Text.
+struct ValueText: View {
+    let value: String
+
+    var body: some View {
+        Text(value)
+            .fontWeight(.medium)
+            .monospacedDigit()
+            .lineLimit(1)
+            .textSelection(.enabled)
+            .contextMenu {
+                Button("Copy") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(value, forType: .string)
+                }
+            }
+    }
+}
+
 struct InfoRow: View {
     let label: String
     let value: String
@@ -105,10 +128,7 @@ struct InfoRow: View {
         HStack {
             Text(label)
             Spacer()
-            Text(value)
-                .fontWeight(.medium)
-                .monospacedDigit()
-                .lineLimit(1)
+            ValueText(value: value)
         }
         .font(.system(size: 12))
     }
@@ -128,10 +148,7 @@ struct LegendRow: View {
                 .frame(width: 9, height: 9)
             Text(label).foregroundStyle(.white)
             Spacer()
-            Text(value)
-                .fontWeight(.medium)
-                .monospacedDigit()
-                .lineLimit(1)
+            ValueText(value: value)
         }
         .font(.system(size: 12))
     }
@@ -156,8 +173,10 @@ struct ProcessIcon: View {
 }
 
 /// One row of a TOP PROCESSES table: the app icon, the (truncating) process name, and a
-/// right-aligned value — a CPU % on the CPU tab, a memory size on the RAM tab.
+/// right-aligned value — a CPU % on the CPU tab, a memory size on the RAM tab. Right-clicking a row
+/// that belongs to a GUI app offers to quit it, which is usually what you came to the list to do.
 struct ProcessRow: View {
+    let pid: Int
     let icon: NSImage?
     let name: String
     let value: String
@@ -172,6 +191,16 @@ struct ProcessRow: View {
             Text(value).fontWeight(.medium).monospacedDigit()
         }
         .font(.system(size: 12))
+        .contextMenu {
+            // Only rows that resolve to an NSRunningApplication get the affordance — the same call
+            // ProcessList.identity uses, so it lines up with which rows have a real icon. terminate()
+            // posts a Quit Apple event, which needs an event loop to honour; offering it for a daemon
+            // would be a menu item that silently does nothing. No forceTerminate() on purpose: a
+            // SIGKILL one mis-click away from a 1 Hz-updating list would cost someone unsaved work.
+            if let app = NSRunningApplication(processIdentifier: pid_t(pid)) {
+                Button("Quit \(name)") { app.terminate() }
+            }
+        }
     }
 }
 

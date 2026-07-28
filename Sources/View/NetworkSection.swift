@@ -283,7 +283,7 @@ private struct NetTotalRow: View {
             RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 10, height: 10)
             Text(label)
             Spacer()
-            Text(value).fontWeight(.medium).monospacedDigit().lineLimit(1)
+            ValueText(value: value)
         }
         .font(.system(size: 12))
     }
@@ -301,7 +301,7 @@ private struct NetDNSRow: View {
                 // Index-stable id: ServerAddresses can list the same resolver twice (VPN + base
                 // service pushing identical IPs), and id: \.self would collide on the duplicate.
                 ForEach(Array(servers.enumerated()), id: \.offset) { _, s in
-                    Text(s).fontWeight(.medium).monospacedDigit().lineLimit(1)
+                    ValueText(value: s)
                 }
             }
         }
