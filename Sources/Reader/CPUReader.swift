@@ -175,10 +175,15 @@ final class CPUReader: ObservableObject {
         }
         prevTicks = cur
 
-        // Temperature only matters inside the popover — skip the SMC reads while it's closed.
+        // Temperature only matters inside the popover — skip the SMC reads while it's closed. One
+        // reading per die zone, kept in key order so the CORE TEMPERATURES cells stay put between
+        // ticks instead of reshuffling as zones overtake each other.
         if panelOpen, !tempKeys.isEmpty {
             let vals = tempKeys.compactMap { smc.readFloat($0) }.filter { $0 > 0 && $0 < 130 }
-            if !vals.isEmpty { out.temperatureC = vals.reduce(0, +) / Double(vals.count) }
+            if !vals.isEmpty {
+                out.coreTemperaturesC = vals
+                out.temperatureC = vals.reduce(0, +) / Double(vals.count)
+            }
         }
 
         // Top processes — also popover-only; publish the last list we have.
@@ -268,15 +273,48 @@ final class CPUReader: ObservableObject {
 
     // MARK: - One-off discovery
 
-    /// The CPU-die temperature keys this chip exposes. Apple Silicon names them in the 4-char "Tp.."
-    /// family (the performance-core die sensors, all `flt`); an Intel Mac exposes a handful of the
-    /// classic TC** keys instead. Probed once at startup so the per-second read only touches keys
-    /// that exist.
+    /// The CPU-die temperature keys this chip exposes — ONE per thermal zone. Apple Silicon names
+    /// them in the 4-char "Tp.." family (all `flt`); an Intel Mac exposes a handful of the classic
+    /// TC** keys instead. Probed once at startup so the per-second read only touches keys that exist.
+    ///
+    /// There are three Tp keys per zone, not one: this M1 Pro publishes 30 of them for a die with 10
+    /// core sites, in groups of three that are three renderings of one zone rather than three
+    /// sensors. Measured at idle, Tp00 / Tp01 / Tp02 read 51.20 / 60.20 / 67.34, and under load all
+    /// three moved by the same delta — the ~9 °C gap between the first two held to the hundredth of a
+    /// degree in every group. Averaging all 30 therefore averages three different quantities.
+    ///
+    /// The last two characters are a base-62 index, which is why the family reads 0,1,2, 4,5,6, 8,9,A,
+    /// C,D,E … rather than a contiguous run: index / 4 is the zone, index % 4 the rendering within it.
+    /// Rendering 1 is the one taken, matching the keys community sensor tables list as the per-core
+    /// reading (here Tp01, Tp05, Tp09, Tp0D, Tp0H, Tp0L, Tp0P, Tp0T, Tp0X, Tp0b). That choice could
+    /// not be cross-checked against powermetrics, which needs root; what IS established is that the
+    /// three renderings are redundant, so collapsing them to one is right whichever one is picked.
+    ///
+    /// Falls back to every Tp key when nothing matches the pattern, so an unfamiliar chip still gets
+    /// a temperature rather than none.
     private static func discoverTemperatureKeys(_ smc: SMC) -> [String] {
         let all = smc.allKeyNames()
         let apple = all.filter { $0.count == 4 && $0.hasPrefix("Tp") }
-        if !apple.isEmpty { return apple.sorted() }
+        if !apple.isEmpty {
+            let zones = apple.filter { (smcIndex($0) ?? 0) % 4 == 1 }
+            guard !zones.isEmpty else { return apple.sorted() }
+            return zones.sorted { (smcIndex($0) ?? 0) < (smcIndex($1) ?? 0) }
+        }
         let intel = ["TC0P", "TC0D", "TC0E", "TC0F", "TC0H", "TC1C", "TC2C", "TC3C", "TC4C", "TCXC", "TCAD"]
         return intel.filter { smc.readFloat($0) != nil }
+    }
+
+    /// The alphabet the SMC counts key indices in — decimal digits, then upper case, then lower.
+    private static let base62 = Array("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")
+
+    /// The two-character numeric suffix of a 4-char SMC key, as a number. nil when either character
+    /// falls outside the alphabet, so a key that doesn't follow the convention is skipped rather than
+    /// silently mis-grouped.
+    private static func smcIndex(_ key: String) -> Int? {
+        let suffix = Array(key.dropFirst(2))
+        guard suffix.count == 2,
+              let hi = base62.firstIndex(of: suffix[0]),
+              let lo = base62.firstIndex(of: suffix[1]) else { return nil }
+        return hi * 62 + lo
     }
 }

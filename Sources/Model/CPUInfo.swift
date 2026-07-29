@@ -47,6 +47,17 @@ struct CPUInfo {
     // chip that exposes none of the keys we probe).
     var temperatureC: Double? = nil
 
+    // Die temperature of each CPU thermal zone, in SMC key order — the spread `temperatureC`
+    // averages away. NOT indexed by logical core, however much the CORES grid pairs them off by
+    // position: the zone count follows the DIE, not the bin (10 sites on an M1 Pro whether the chip
+    // ships as an 8- or 10-core), and the SMC publishes nothing saying which zone hosts which core.
+    // Measurement rules out both obvious guesses — six busy performance cores heated zones 0, 1, 3,
+    // 5, 6 and 8 by 16–19 °C while the rest moved 11–13 °C, which is neither the contiguous 2…7 that
+    // logical-core order predicts nor the 2,3,4,6,7,8 that the device tree's physical cpu-ids do.
+    // CPUSection.cores documents why pairing by position is still the right call. Empty until the
+    // popover has been open for a tick (see CPUReader.refresh).
+    var coreTemperaturesC: [Double] = []
+
     // Seconds since the machine last booted.
     var uptimeSeconds: Double = 0
 

@@ -202,23 +202,55 @@ struct CPUDetailView: View {
     /// averages, so the section costs no extra sampling. Four columns keeps an 8- or 10-core chip to
     /// two rows; colour carries the cluster (matching the DETAILS rows), so no per-cell label is
     /// needed to tell efficiency from performance.
+    ///
+    /// The die temperature sits above each bar, pairing zone i with core i. That pairing is a
+    /// CONVENTION, not something the SMC states, and on this chip it is provably imperfect: the die
+    /// has ten thermal zones and eight live cores (max_cpus=10 with cpu-ids 5 and 9 absent from the
+    /// device tree — two fused-off sites), and loading the six performance cores heated zones 0, 1, 3,
+    /// 5, 6 and 8, which is neither the contiguous run that core order predicts nor the one that
+    /// physical cpu-id order predicts. So a given cell may be showing a sibling core's zone. What
+    /// bounds the damage is that the whole signal is small: the six live performance zones sat within
+    /// 2.6 °C of each other at idle and 3.1 °C under load, so a mis-paired cell is off by about as
+    /// much as the feature's entire range. Displaying nothing would cost more than that.
     @ViewBuilder
     private var cores: some View {
         if !info.perCoreBusy.isEmpty {
+            let temps = info.coreTemperaturesC
             SectionCaption("CORES")
-            LazyVGrid(columns: Array(repeating: GridItem(spacing: 8), count: 4), spacing: 8) {
-                ForEach(Array(info.perCoreBusy.enumerated()), id: \.offset) { idx, busy in
-                    VStack(spacing: 3) {
-                        BarView(pct: busy, color: coreColor(idx))
-                        Text("\(Int(busy.rounded()))%")
-                            .font(.system(size: 9))
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
+            VStack(spacing: 6) {
+                LazyVGrid(columns: Array(repeating: GridItem(spacing: 8), count: 4), spacing: 8) {
+                    ForEach(Array(info.perCoreBusy.enumerated()), id: \.offset) { idx, busy in
+                        VStack(spacing: 3) {
+                            if idx < temps.count {
+                                Text("\(Int(temps[idx].rounded()))°")
+                                    .font(.system(size: 9))
+                                    .monospacedDigit()
+                                    .foregroundStyle(coreTempColor(temps[idx]))
+                            }
+                            BarView(pct: busy, color: coreColor(idx))
+                            Text("\(Int(busy.rounded()))%")
+                                .font(.system(size: 9))
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                        }
                     }
+                }
+                if temps.count > info.perCoreBusy.count {
+                    // Say so rather than quietly dropping them: the hottest zone on the die may be one
+                    // of the ones with no cell, and that is the number a throttling machine is
+                    // throttling on.
+                    Text("\(temps.count) die zones · hottest \(Int((temps.max() ?? 0).rounded()))°")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
         }
     }
+
+    /// Quiet until it matters. A die at 57 °C is not news, so the per-core figure reads as secondary
+    /// text and only takes on the temperature ring's warning colours once the core is genuinely warm.
+    private func coreTempColor(_ c: Double) -> Color { c < 75 ? .secondary : tempColor(c) }
 
     /// Efficiency cores are the low indices, performance cores follow — see CPUReader's header for how
     /// that ordering was confirmed. A chip that reports no cluster split (Intel) gets one flat colour
