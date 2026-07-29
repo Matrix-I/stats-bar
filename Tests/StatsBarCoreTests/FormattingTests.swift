@@ -29,6 +29,8 @@ struct FormattingTests {
         (UInt64(999), "999 bytes"),          // last value with no decimal
         (UInt64(1000), "1.0 KB"),            // first promoted value
         (UInt64(58_500_000), "58.5 MB"),
+        (UInt64(999_949), "999.9 KB"),       // last value that still reads in KB
+        (UInt64(999_950), "1.0 MB"),         // half a printed digit later the unit must change
     ])
     func fmtBytesBoundaries(input: UInt64, expected: String) {
         #expect(fmtBytes(input) == expected)
@@ -52,11 +54,33 @@ struct FormattingTests {
     @Test("fmtProcessMemory switches unit at exactly one gibibyte", arguments: [
         (UInt64(0), "0 MB"),
         (UInt64(1_071_644_672), "1022 MB"),   // 1022 MiB — still MB
-        (UInt64(1_073_741_824), "1.00 GB"),   // exactly 1 GiB — flips to GB
+        (UInt64(1_073_217_535), "1023 MB"),   // last MiB figure that rounds below 1024
+        (UInt64(1_073_217_536), "1.00 GB"),   // 1023.5 MiB rounds TO 1024, so the unit changes here
+        (UInt64(1_073_741_823), "1.00 GB"),   // one byte under a gibibyte
+        (UInt64(1_073_741_824), "1.00 GB"),   // exactly 1 GiB
         (UInt64(3_028_287_488), "2.82 GB"),
     ])
     func fmtProcessMemoryBoundary(input: UInt64, expected: String) {
         #expect(fmtProcessMemory(input) == expected)
+    }
+
+    @Test("no scaling formatter prints a figure its own unit rules out")
+    func unitIsChosenAfterRounding() {
+        // One rule, three functions: the unit follows the value AS PRINTED. Each input here sits in the
+        // window where the raw value is below the promotion threshold but the printed one is not, and
+        // each used to produce a reading the function's own rules forbid — "1024 MB" from a branch that
+        // stops at a gibibyte, "1000.0 KB" and "1000 B/s" from tables whose next unit begins at 1000.
+        #expect(fmtProcessMemory(1_073_217_536) == "1.00 GB")   // 1023.5 MiB; was "1024 MB"
+        #expect(fmtBytes(999_950) == "1.0 MB")                  // was "1000.0 KB"
+        #expect(fmtBytes(999_999_999) == "1.0 GB")              // was "1000.0 MB"
+
+        let slowLink = fmtRateParts(999.6)
+        #expect(slowLink.value == "1")                          // was "1000"
+        #expect(slowLink.unit == "KB/s")                        // …of "B/s"
+
+        let fastLink = fmtRateParts(999_600)
+        #expect(fastLink.value == "1.0")                        // was "1000"
+        #expect(fastLink.unit == "MB/s")                        // …of "KB/s"
     }
 
     // MARK: fmtUptime — coarse, and singular/plural correct
@@ -92,6 +116,16 @@ struct FormattingTests {
     ])
     func fmtMinutesPadding(input: Int, expected: String) {
         #expect(fmtMinutes(input) == expected)
+    }
+
+    @Test("fmtMinutes clamps negative input like fmtUptime does")
+    func fmtMinutesClampsNegative() {
+        // Unclamped, the sign appears twice — "-1h -30m" — because the hours and the remainder are
+        // signed independently. The two BatteryDetailView call sites filter to 1..<65535, so this is
+        // cover for the next caller rather than a live fix; the point is that the two time formatters
+        // in this file now agree about negative input instead of one clamping and the other not.
+        #expect(fmtMinutes(-1) == "0h 00m")
+        #expect(fmtMinutes(-90) == "0h 00m")
     }
 
     // MARK: fmtRate / fmtRateParts — live throughput
