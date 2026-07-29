@@ -37,7 +37,8 @@ fi
 # fix is to name both locations explicitly.
 #
 # Only added when those directories actually exist, which is what makes this a no-op on a machine
-# with full Xcode: there SwiftPM's own wiring works and nothing needs overriding.
+# with full Xcode: there SwiftPM's own wiring works and nothing needs overriding. That no-op path is
+# the reason line 56 expands FLAGS the long way round — see the note there.
 DEV="$(xcode-select -p)"
 FRAMEWORKS="$DEV/Library/Developer/Frameworks"
 INTEROP="$DEV/Library/Developer/usr/lib"
@@ -52,4 +53,9 @@ fi
 # checking in Sources/Core match the app that build_app.sh actually ships. The test bundle isn't
 # shipped, so linking it against a newer dylib costs nothing.
 echo "🧪 Running unit tests (Sources/Core) ..."
-exec swift test "${FLAGS[@]}" "$@"
+# ${FLAGS[@]+"${FLAGS[@]}"}, not "${FLAGS[@]}": /bin/bash on macOS is 3.2, where expanding an EMPTY
+# array under `set -u` is an "unbound variable" error rather than expanding to nothing. FLAGS is empty
+# on exactly the machine the block above is written for — one with full Xcode, where none of the
+# overrides are needed — so the plain form killed the script before `swift test` ran, and killed it
+# with a shell error that says nothing about tests. `"$@"` needs no such guard: bash special-cases it.
+exec swift test ${FLAGS[@]+"${FLAGS[@]}"} "$@"
