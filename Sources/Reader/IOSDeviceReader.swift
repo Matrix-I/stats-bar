@@ -47,19 +47,16 @@ final class IOSDeviceReader: ObservableObject {
     /// inside publish, so its threshold-crossing state stays single-threaded.
     private let alerter = TemperatureAlerter()
 
-    /// Cache of the most recently read devices (only touched on the main thread, inside publish) —
-    /// used to keep showing data when the USB connection drops briefly instead of the device "vanishing".
-    private var lastGood: [IOSDeviceInfo] = []
-    /// Last time each UDID appeared in a fresh enumeration, so a cache entry is pruned once its
-    /// device has been gone longer than staleGraceGone — regardless of whether *other* devices are
-    /// still reading. A single global timestamp can't express "device A left but B is fine".
-    private var lastSeenAt: [String: Date] = [:]
-    /// How long to keep showing the last reading after reads stop succeeding, before the device
-    /// disappears. Short when it drops out of USB enumeration entirely (usually a real unplug),
-    /// longer when it's still enumerated but the battery read fails (e.g. locked / another app holds
-    /// the lockdown session, which tends to recover on its own).
-    private static let staleGraceGone: TimeInterval = 3
-    private static let staleGraceUnreadable: TimeInterval = 30
+    /// Which device to show as read, which to show with cached health grafted on, and which to keep
+    /// showing while its reads fail — plus the cache of last-good reads all of that rests on. Lives in
+    /// Sources/Core (DevicePresenceCache) so it can be unit-tested: this type can't be, since it is an
+    /// ObservableObject that shells out to libimobiledevice. Only touched on the main thread, inside
+    /// publish, so its per-device state stays single-threaded.
+    ///
+    /// 3 s to disappear once it drops out of USB enumeration entirely (usually a real unplug); the
+    /// default 30 s to ride out a device that is still enumerated but unreadable — locked, or another
+    /// app holding the lockdown session, which tends to recover on its own.
+    private var presence = DevicePresenceCache<IOSDeviceInfo, String>(graceGone: 3)
 
     init() {
         refresh()
@@ -149,94 +146,57 @@ final class IOSDeviceReader: ObservableObject {
         }
         self.toolsMissing = false
 
-        let now = Date()
-        // Note every UDID currently on the bus (locked/errored devices count as present too),
-        // so cache staleness below is judged per-device rather than by a single global clock.
-        for dev in fresh { self.lastSeenAt[dev.id] = now }
+        // Each fresh read is one of four kinds, which collapse to three for the cache:
+        //  • full read (unlocked)      → .good: shown as-is, becomes the new cached baseline;
+        //  • light read (isLightRead)  → .partial: glyph-only pass, live charge %, no health read;
+        //  • locked read (isLocked)    → .partial too — live charge only, so the last-known health is
+        //                                grafted from cache and stays on screen indefinitely (health
+        //                                barely changes; timestamped in the UI). The two differ only in
+        //                                whether the row shows a lock badge, never a hard error;
+        //  • hard failure (errorMessage) → .failed: untrusted / handshake dropped, so ride out on
+        //                                *this* device's own cached data, then surface the error.
+        let resolved = presence.resolve(
+            fresh, now: Date(), id: \.id,
+            kind: { dev in
+                if dev.errorMessage == nil, !dev.isLocked, !dev.isLightRead { return .good }
+                if dev.isLocked || dev.isLightRead { return .partial }
+                return .failed
+            },
+            capturedAt: \.capturedAt
+        )
 
-        // Empty enumeration → device is off the USB bus. Ride out a brief blip, then let it go:
-        // a deliberate unplug should clear within a few seconds, not linger.
-        if fresh.isEmpty {
-            let recent = self.lastGood.filter { self.seenWithin(Self.staleGraceGone, $0.id, now) }
-            if !recent.isEmpty {
-                self.devices = recent.map { var d = $0; d.isStale = true; return d }
-                self.statusMessage = nil
-            } else {
-                self.devices = []
-                self.statusMessage = status
-                    ?? "No iPhone/iPad found over USB or Wi-Fi.\nPlug in the cable (unlock + tap Trust), or turn on “Sync over Wi-Fi” in Finder."
-            }
+        // Nothing at all to show. Only reachable from an empty enumeration with nothing recent enough to
+        // ride out: any non-empty enumeration resolves to one row per device.
+        if resolved.isEmpty {
+            self.devices = []
+            self.statusMessage = status
+                ?? "No iPhone/iPad found over USB or Wi-Fi.\nPlug in the cable (unlock + tap Trust), or turn on “Sync over Wi-Fi” in Finder."
             return
         }
 
-        // Enumeration succeeded. Each fresh read is one of four kinds:
-        //  • full read (unlocked)      → shown as-is, becomes the new cached baseline;
-        //  • light read (isLightRead)  → glyph-only pass: live charge %, no health read. Grafted
-        //                                exactly like a locked read (last-known health from cache,
-        //                                never a new baseline), just without the lock badge;
-        //  • locked read (isLocked)    → live charge only, so graft the last-known health from
-        //                                cache and keep it on screen indefinitely (health barely
-        //                                changes; timestamped in the UI). Never a hard error;
-        //  • hard failure (errorMessage) → untrusted / handshake dropped: ride out on *this*
-        //                                device's own cached data for the grace window, then
-        //                                surface the error.
-        var merged: [IOSDeviceInfo] = []
-        var freshGood: [IOSDeviceInfo] = []
-        for dev in fresh {
-            if dev.errorMessage == nil, !dev.isLocked, !dev.isLightRead {
-                merged.append(dev)
-                freshGood.append(dev)
-            } else if dev.isLocked || dev.isLightRead {
+        self.devices = resolved.map { row in
+            switch row {
+            case .fresh(let dev):
+                return dev
+            case .grafted(let dev, let prev):
+                // Graft the static health figures; leave currentCapacity/amperage/temp/voltage unset so
+                // charge stays live (a locked row's lockedChargePercent, a light read's stateOfCharge)
+                // and no stale dynamic values are shown.
                 var m = dev
-                if let prev = self.lastGood.first(where: { $0.id == dev.id }) {
-                    // Graft the static health figures; leave currentCapacity/amperage/temp/
-                    // voltage unset so charge stays live (a locked row's lockedChargePercent, a
-                    // light read's stateOfCharge) and no stale dynamic values are shown.
-                    m.maxCapacity = prev.maxCapacity
-                    m.nominalChargeCapacity = prev.nominalChargeCapacity
-                    m.designCapacity = prev.designCapacity
-                    m.cycleCount = prev.cycleCount
-                    m.serial = prev.serial
-                    m.capturedAt = prev.capturedAt   // when those health figures were actually read
-                }
-                merged.append(m)   // not added to freshGood: a partial read must not overwrite the baseline
-            } else if let prev = self.lastGood.first(where: { $0.id == dev.id }),
-                      let cap = prev.capturedAt, now.timeIntervalSince(cap) < Self.staleGraceUnreadable {
-                // Grace measured from THIS device's own last good read, so a healthy sibling
-                // refreshing can't keep resetting it and hide this device's error forever.
-                var s = prev; s.isStale = true
-                merged.append(s)
-            } else {
-                merged.append(dev)
+                m.maxCapacity = prev.maxCapacity
+                m.nominalChargeCapacity = prev.nominalChargeCapacity
+                m.designCapacity = prev.designCapacity
+                m.cycleCount = prev.cycleCount
+                m.serial = prev.serial
+                m.capturedAt = prev.capturedAt   // when those health figures were actually read
+                return m
+            case .cachedStale(let prev):
+                var s = prev
+                s.isStale = true
+                return s
             }
         }
-        self.devices = merged
         self.statusMessage = nil
-
-        // Merge (don't replace) fresh full reads into the cache so a device that read fully this
-        // tick updates its own entry while a sibling that is locked/failed keeps its previously
-        // cached good data — otherwise a single healthy device would evict every other device's
-        // health from the cache.
-        if !freshGood.isEmpty {
-            var updated = self.lastGood
-            for g in freshGood {
-                if let i = updated.firstIndex(where: { $0.id == g.id }) { updated[i] = g }
-                else { updated.append(g) }
-            }
-            self.lastGood = updated
-        }
-        // Prune entries whose device has been off the bus longer than the ride-out window. Runs
-        // every publish, so a genuinely departed device doesn't linger (and briefly resurrect
-        // when the bus later goes fully empty), while a one-tick enumeration blip keeps its
-        // entry — and, for a locked device, its graft baseline.
-        self.lastGood = self.lastGood.filter { self.seenWithin(Self.staleGraceGone, $0.id, now) }
-    }
-
-    /// True if `id` appeared in a fresh enumeration within `window` of `now`. Main-thread only
-    /// (lastSeenAt is only touched inside publish).
-    private func seenWithin(_ window: TimeInterval, _ id: String, _ now: Date) -> Bool {
-        guard let seen = lastSeenAt[id] else { return false }
-        return now.timeIntervalSince(seen) < window
     }
 }
 
