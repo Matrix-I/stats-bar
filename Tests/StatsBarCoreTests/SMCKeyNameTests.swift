@@ -125,11 +125,48 @@ struct SMCKeyNameTests {
         #expect(SMCKeyName.cpuThermalKeys(from: []) == nil)
     }
 
+    @Test("a Tp family where nothing decodes is nil, not an empty list")
+    func undecodableFamilyIsAlsoTheIntelSignal() {
+        // Tp-shaped names that carry no usable index are worth exactly as much as no family at all, so
+        // the answer has to be nil: an empty array would leave CPUReader with a list it can read nothing
+        // from and no reason to try the TC** probe, i.e. no temperature anywhere in the UI.
+        #expect(SMCKeyName.cpuThermalKeys(from: ["Tp-!", "Tp  "]) == nil)
+    }
+
     @Test("falls back to every Tp key when none sit at rendering 1")
     func fallsBackToAllTpKeys() {
         // An unfamiliar chip that numbers its zones differently still gets a temperature — averaged over
         // whatever it does publish — rather than none.
         #expect(SMCKeyName.cpuThermalKeys(from: ["Tp02", "Tp00"]) == ["Tp00", "Tp02"])
+    }
+
+    @Test("a contiguous Tp family is kept whole rather than thinned to a quarter of the die")
+    func contiguousFamilyIsNotThinned() {
+        // The case the shape test exists for. A one-sensor-per-zone chip numbers its keys 0,1,2,3,…, and
+        // a bare `index % 4 == 1` filter accepts two of those eight and reports them as the whole die —
+        // an average over a quarter of the chip, printed as a perfectly plausible °C. Nothing downstream
+        // can tell: CPUSection would draw two cells for an eight-core part and nobody counts cells.
+        let contiguous = ["Tp00", "Tp01", "Tp02", "Tp03", "Tp04", "Tp05", "Tp06", "Tp07"]
+        #expect(SMCKeyName.cpuThermalKeys(from: contiguous) == contiguous)
+    }
+
+    @Test("a three-per-zone family that starts at an offset is kept whole")
+    func offsetFamilyIsNotThinned() {
+        // Renderings-shaped, but the groups begin at 2 rather than at a multiple of 4, so `index / 4`
+        // splits them across zone boundaries and no selection derived from that grouping is trustworthy.
+        // Returning everything averages the three redundant renderings — wrong by the ~9 °C this file is
+        // about — but wrong in the direction that shows up if anyone ever compares two chips, rather
+        // than the direction that quietly discards sensors.
+        let offset = ["Tp02", "Tp03", "Tp04", "Tp06", "Tp07", "Tp08"]
+        #expect(SMCKeyName.cpuThermalKeys(from: offset) == offset)
+    }
+
+    @Test("one junk name does not stop the real family being thinned")
+    func aSingleJunkKeyDoesNotDisableSelection() {
+        // The shape is judged on the names that decode, not on every Tp-prefixed string present. An M1
+        // Pro that also published something unreadable must still collapse to its ten zones, because the
+        // alternative — falling back to all thirty — is the ~9 °C averaging error.
+        #expect(SMCKeyName.cpuThermalKeys(from: Self.m1ProTpKeys + ["Tp-!"]) == Self.expectedZoneKeys)
     }
 
     @Test("the fallback list also excludes keys of the wrong length")

@@ -270,9 +270,12 @@ final class CPUReader: ObservableObject {
     /// not be cross-checked against powermetrics, which needs root; what IS established is that the
     /// three renderings are redundant, so collapsing them to one is right whichever one is picked.
     ///
-    /// Falls back to every Tp key when nothing matches the pattern, so an unfamiliar chip still gets
-    /// a temperature rather than none. SMCKeyName owns the name arithmetic — it's the half of this
-    /// that runs without an SMC, and therefore the half under unit test.
+    /// That thinning only happens on a family with the shape above — contiguous zones from 0, each
+    /// publishing renderings 0, 1 and 2. Any other Tp family is kept whole, because a key name cannot
+    /// say whether a contiguous `Tp00…Tp07` is eight zones or eight renderings of one, and keeping too
+    /// many sensors merely averages a spread while keeping the wrong subset would silently drop most of
+    /// an unfamiliar die. SMCKeyName owns the name arithmetic — it's the half of this that runs without
+    /// an SMC, and therefore the half under unit test.
     private static func discoverTemperatureKeys(_ smc: SMC) -> [String] {
         if let apple = SMCKeyName.cpuThermalKeys(from: smc.allKeyNames()) { return apple }
         let intel = ["TC0P", "TC0D", "TC0E", "TC0F", "TC0H", "TC1C", "TC2C", "TC3C", "TC4C", "TCXC", "TCAD"]
