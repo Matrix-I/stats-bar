@@ -7,6 +7,9 @@ Frameworks/
 .sparkle-tools/
 __pycache__/
 *.pyc
+# SwiftPM's build dir. Package.swift exists only to run `swift test` (see its header) — the app is
+# still built by build_app.sh, which never writes here.
+.build/
 .claude/
 .idea/
 AppIcon.iconset/
