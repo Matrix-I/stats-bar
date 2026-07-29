@@ -1,0 +1,71 @@
+# CI — two checks, run in parallel on every push and pull request.
+#
+# The split matters because the unit tests cover Sources/Core only, which is a couple of hundred lines out
+# of ~7,800. Tests alone would let a broken reader or view sail through green, so the second job compiles,
+# links and packages the WHOLE tree exactly the way a release does. Between them: the pure logic is
+# asserted, and everything else is at least guaranteed to build.
+#
+# Both jobs run the repo's own scripts rather than re-implementing the commands here, so CI can't drift
+# away from what a developer runs locally.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A second push to the same branch cancels the first — these jobs are a gate, not a record.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Unit tests (Sources/Core)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Printed so a toolchain-shaped failure is diagnosable from the log alone. swift-testing
+      # (`import Testing`) needs Swift 6.0+, which is Xcode 16 and later.
+      - name: Toolchain
+        run: |
+          xcode-select -p
+          swift --version
+
+      # run_tests.sh also enforces the Sources/Core purity rule (no I/O imports, no ObservableObject) and
+      # fails the job when it is broken — that rule is what keeps these tests deterministic.
+      - name: Run tests
+        run: ./run_tests.sh
+
+  build:
+    name: Build the app
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # ~15 MB, and .gitignored rather than committed, so it is re-fetched per run. Cached because it is
+      # pinned to one version — a cache hit makes this step a no-op.
+      - name: Cache Sparkle
+        uses: actions/cache@v4
+        with:
+          path: |
+            Frameworks
+            .sparkle-tools
+          key: sparkle-2.9.4
+
+      # --no-launch stops the script relaunching the app, which is the only part of it that makes no sense
+      # on a runner. Everything else runs for real: swiftc over every file in Sources/, linking Sparkle,
+      # assembling the bundle, and signing — which falls back to ad-hoc here, since the runner has no
+      # "StatsBar Local" identity in its keychain.
+      - name: Build
+        run: ./build_app.sh --no-launch
+
+      - name: Verify the bundle
+        run: |
+          test -x StatsBar.app/Contents/MacOS/StatsBar
+          test -d StatsBar.app/Contents/Frameworks/Sparkle.framework
+          codesign --verify --deep --strict StatsBar.app
+          # The version the bundle actually carries — worth having in the log when a release goes out.
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' StatsBar.app/Contents/Info.plist
