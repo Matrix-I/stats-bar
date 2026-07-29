@@ -119,14 +119,25 @@ struct MemoryBucketsTests {
     @Test("fractions are shares of physical RAM")
     func fractionsAreShares() {
         let b = Self.snapshot()
-        #expect(abs(b.usedFraction - 0.410080) < 0.000001)
+        // Independent literals, not the code's own expression. `appFraction == Double(app)/Double(total)`
+        // is a tautology: it holds whatever `fraction(_:)` divides by, so it would also pass if every
+        // fraction read the wrong bucket. All four segments are drawn by MemorySection from these, and
+        // they are far enough apart (26.7 / 9.5 / 4.8 / 19.1 %) that a copy-paste picking the wrong field
+        // fails loudly rather than shifting a band by a hair.
+        #expect(abs(b.appFraction - 0.267029) < 1e-6)
+        #expect(abs(b.wiredFraction - 0.095367) < 1e-6)
+        #expect(abs(b.compressedFraction - 0.047684) < 1e-6)
+        #expect(abs(b.cachedFraction - 0.190735) < 1e-6)
+        #expect(abs(b.usedFraction - 0.410080) < 1e-6)
         #expect(abs(b.usagePercent - 41.0080) < 0.0001)
-        #expect(abs(b.appFraction - Double(b.app) / Double(b.total)) < 1e-12)
-        #expect(abs(b.cachedFraction - Double(b.cached) / Double(b.total)) < 1e-12)
+        // The invariant the segmented bar depends on: the five drawn widths tile the track with nothing
+        // left over and nothing counted twice. Exact for this fixture — every figure is a whole number of
+        // 16 KiB pages against a power-of-two total — so the tolerance is only there for a future one.
+        #expect(abs(b.appFraction + b.wiredFraction + b.compressedFraction + b.cachedFraction
+                    + Double(b.free) / Double(b.total) - 1.0) < 1e-12)
         // The pressure ring tracks what can't be reclaimed on demand, so Cached is excluded from it
-        // even though it is resident.
-        #expect(abs(b.pressureFraction
-                    - Double(b.wired + b.compressed) / Double(b.total)) < 1e-12)
+        // even though it is resident: wired + compressed only.
+        #expect(abs(b.pressureFraction - 0.143051) < 1e-6)
     }
 
     @Test("an unread machine yields zeroes instead of dividing by zero")

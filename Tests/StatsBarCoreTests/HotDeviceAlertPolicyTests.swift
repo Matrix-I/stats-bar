@@ -25,6 +25,14 @@ struct HotDeviceAlertPolicyTests {
             .map { $0.device.id }
     }
 
+    /// One poll, keeping the temperature each alert carries. Separate from `poll` so the cases that are
+    /// only about WHICH devices fire stay readable.
+    static func pollPairs(_ policy: inout HotDeviceAlertPolicy,
+                          _ devices: [Device], enabled: Bool = true) -> [(String, Double)] {
+        policy.devicesToAlert(devices, enabled: enabled, id: \.id, temperature: \.temperatureC)
+            .map { ($0.device.id, $0.temperatureC) }
+    }
+
     static func phone(_ temp: Double?, id: String = "udid-1") -> Device {
         Device(id: id, temperatureC: temp)
     }
@@ -137,6 +145,19 @@ struct HotDeviceAlertPolicyTests {
         let hot = Self.phone(41.0, id: "hot"), cool = Self.phone(25.0, id: "cool")
         #expect(Self.poll(&p, [hot, cool]) == ["hot"])
         #expect(p.alerted == ["hot"])
+    }
+
+    @Test("each alert carries that device's own reading, not the threshold")
+    func alertsCarryTheMeasuredTemperature() {
+        // The temperature is the only quantitative content of the notification — TemperatureAlerter
+        // formats it straight into the body — and every other case in this file maps the result down to
+        // ids, so nothing looked at it. Returning `thresholdC` instead of `temp` would report 39.0 °C for
+        // a phone at 43.5 and pass the whole suite; so would pairing two devices' readings the wrong way
+        // round, which is what the second assertion rules out.
+        var p = HotDeviceAlertPolicy()
+        let fired = Self.pollPairs(&p, [Self.phone(41.0, id: "a"), Self.phone(43.5, id: "b")])
+        #expect(fired.map { $0.0 } == ["a", "b"])
+        #expect(fired.map { $0.1 } == [41.0, 43.5])
     }
 
     // MARK: The off switch

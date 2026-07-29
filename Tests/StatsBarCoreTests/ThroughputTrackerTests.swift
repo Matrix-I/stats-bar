@@ -65,6 +65,16 @@ struct ThroughputTrackerTests {
                          atNanoseconds: Self.second + 20_000_000)   // +20 ms
         #expect(r.downloadRate == 1_000_000)    // unchanged from the previous interval
         #expect(r.downloadTotal == 1_001_500)   // the total still takes the bytes
+
+        // The half of that guard nothing else exercises: declining to measure must also decline to move
+        // lastRx/lastTx/lastSampleNanos, so the skipped tick's 1500 bytes roll into the NEXT interval
+        // instead of vanishing. Hoisting those three assignments above the guard looks like a tidy-up
+        // ("always remember the newest sample") and reads correct in isolation — it would just quietly
+        // divide 500 bytes by 0.98 s here instead of 2000 by 1 s, a 4x under-report on every tick that
+        // follows an early one.
+        let after = t.update(with: Self.sample(rx: 1_002_000, tx: 0), atNanoseconds: 2 * Self.second)
+        #expect(after.downloadRate == 2_000)
+        #expect(after.downloadTotal == 1_002_000)
     }
 
     @Test("the interval floor is 0.2 s exclusive")
