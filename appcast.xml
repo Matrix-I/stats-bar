@@ -7,6 +7,35 @@
     <language>en</language>
     <!-- APPCAST_ITEMS: update_appcast.sh prepends each release's <item> immediately below this line. -->
     <item>
+      <title>Version 2.12.0</title>
+      <pubDate>Wed, 29 Jul 2026 14:26:05 +0700</pubDate>
+      <sparkle:version>2.12.0</sparkle:version>
+      <sparkle:shortVersionString>2.12.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[# StatsBar v2.12.0 — per-core detail, fan context, and Free memory told the truth
+
+- **Every logical core now has its own usage bar, with its die temperature above it.** Two cluster averages could never tell one pegged core apart from every core running at a third. One caveat worth knowing: the die publishes more thermal zones than the chip has live cores — ten against eight on a binned M1 Pro — and nothing in the SMC says which zone belongs to which core, so a cell may be showing a neighbour's reading. The spread between cores is only about 3 °C, and the caption names the zone count and the hottest zone so the number that actually matters isn't hidden.
+
+- **Fans now say how hard they are working, not just how fast they are spinning.** 2334 rpm means nothing on its own. Each fan shows its own floor and ceiling and where it currently sits between them, coloured by effort, and a spin-up appears before it becomes audible.
+
+- **Battery cycle count is shown against the pack's rated life** — "307 / 1000 (31%)" instead of a bare 307 that means nothing without the rating.
+
+- **The CPU panel gained thermal pressure, Low Power Mode and load average.** macOS pushes the first two rather than being polled for them, so they cost nothing while the machine is cool and idle. Low Power Mode additionally backs the background sampler off from 2 s to 5 s — a stats app should take that hint rather than work against it. The load average is divided by the core count and labelled as such, so 1.00 means "exactly as much runnable work as this machine has cores".
+
+- **Attached displays are listed:** name, the resolution System Settings shows, the panel's real pixel grid beneath it, refresh rate and diagonal.
+
+- **Values in the panels can be selected and copied.** Serial numbers, MAC and IP addresses, DNS resolvers — the things you open a hardware inspector in order to paste somewhere else — were all dead pixels. Right-click any value for Copy, and right-click a process in the CPU or RAM list to quit it.
+
+- **Fixed: Free memory over-reported by gigabytes.** Cached files — file data the kernel holds on to but can drop the moment something needs the space — were being counted as free. On a 16 GB machine that was 3.2 GB in the wrong column. The bar and legend now carry a Cached Files bucket; the menu-bar percentage is unchanged, because those pages were never counted as used.
+
+- **Fixed: the hot-battery notification did nothing when you clicked it.** It now brings StatsBar forward, where the device that triggered it can be looked at. Two related fixes: the fallback alert played a sound with no setting anywhere to stop it (there is a toggle now, beside the alert switch it belongs to), and on a multi-display desk it could appear over whichever screen happened to have focus instead of beside the menu bar.
+
+- **Fixed: the build did not pin a deployment target,** which silently switched off the compiler's availability checking — a macOS 14-only API would compile without so much as a warning and then crash at runtime on macOS 13. The floor is now declared explicitly and matches what the app says it supports.
+
+_Not notarized — right-click → Open on first launch (or `xattr -dr com.apple.quarantine /Applications/StatsBar.app`)._]]></description>
+      <enclosure url="https://github.com/Matrix-I/stats-bar/releases/download/v2.12.0/StatsBar-v2.12.0.dmg" sparkle:edSignature="HJqXhIAEIKgLwRRpf4KSYkDx3n9GlsjeI0+W8nlMKLWoOh/RDrZkAJ0mkuI8PyEZOYR3KaqHBMAjUSxK4D6aCQ==" length="2490915" type="application/octet-stream" />
+    </item>
+    <item>
       <title>Version 2.11.1</title>
       <pubDate>Mon, 27 Jul 2026 11:01:35 +0700</pubDate>
       <sparkle:version>2.11.1</sparkle:version>
