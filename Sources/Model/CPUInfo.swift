@@ -17,23 +17,9 @@ struct ProcessSample: Identifiable {
 }
 
 struct CPUInfo {
-    // Overall load, as a share of total CPU ticks in the last sampling window (0…100).
-    // `user` folds in nice (scheduler-niced user time), matching how Activity Monitor / Stats
-    // present it, so system + user + idle ≈ 100.
-    var systemPercent = 0.0
-    var userPercent = 0.0
-    var idlePercent = 100.0
-
-    // Average busy% of each core cluster. nil until the first delta is available, or when the
-    // machine has no such cluster (e.g. an Intel Mac with a single performance level).
-    var efficiencyPercent: Double? = nil
-    var performancePercent: Double? = nil
-
-    // Busy% of every logical core, in host_processor_info order — efficiency cores occupy the low
-    // indices, performance cores follow (CPUReader documents how that was verified). Empty until the
-    // first tick delta is available. This is the array the cluster averages above are reduced from,
-    // so publishing it costs no extra sampling.
-    var perCoreBusy: [Double] = []
+    /// The tick-delta load and everything derived from it. Lives in Sources/Core (CPULoad) so it can be
+    /// unit-tested — this type can't be, since ProcessSample pulls in AppKit.
+    var load = CPULoad()
 
     var coreCount = 0
     var efficiencyCoreCount = 0
@@ -83,6 +69,14 @@ struct CPUInfo {
     var efficiencyFrequencyMHz: Double? = nil
     var performanceFrequencyMHz: Double? = nil
 
-    /// The figure shown in the usage ring and menu bar: everything that isn't idle.
-    var usagePercent: Double { max(0, min(100, 100 - idlePercent)) }
+    // Read-only forwards, so the panels, the Control Center tiles and the menu-bar label keep reading
+    // `info.usagePercent` rather than `info.load.usagePercent`. Nothing is computed here: each of these
+    // is CPULoad's own property, and that is the only place the arithmetic exists.
+    var systemPercent: Double       { load.systemPercent }
+    var userPercent: Double         { load.userPercent }
+    var idlePercent: Double         { load.idlePercent }
+    var efficiencyPercent: Double?  { load.efficiencyPercent }
+    var performancePercent: Double? { load.performancePercent }
+    var perCoreBusy: [Double]       { load.perCoreBusy }
+    var usagePercent: Double        { load.usagePercent }
 }

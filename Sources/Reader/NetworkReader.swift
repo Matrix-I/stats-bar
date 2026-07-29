@@ -38,14 +38,9 @@ final class NetworkReader: NSObject, ObservableObject {
     private var itemVisible = true
     private lazy var poll = PollingTimer { [weak self] in self?.tick() }
 
-    // Session throughput: baseline is the counter value at launch/interface-switch; last* + lastSampleTime
-    // drive the per-second rate. Keyed by BSD name so plugging into Ethernet resets cleanly.
-    private var baselineBSD: String?
-    private var baselineRx: UInt64 = 0
-    private var baselineTx: UInt64 = 0
-    private var lastRx: UInt64 = 0
-    private var lastTx: UInt64 = 0
-    private var lastSampleTime: DispatchTime?
+    // Session totals and the live rate. All of the baseline / previous-sample bookkeeping lives in
+    // ThroughputTracker (Sources/Core), where it is unit-tested; this reader only feeds it samples.
+    private var throughput = ThroughputTracker()
 
     private var lastPingAt: DispatchTime?
     private var lastPublicIPAt: DispatchTime?
@@ -126,10 +121,8 @@ final class NetworkReader: NSObject, ObservableObject {
     private func primeBaseline() {
         guard let bsd = NetworkInterface.primaryInterface(),
               let c = NetworkInterface.counters(for: bsd) else { return }
-        baselineBSD = bsd
-        baselineRx = c.rxBytes; baselineTx = c.txBytes
-        lastRx = c.rxBytes; lastTx = c.txBytes
-        lastSampleTime = DispatchTime.now()
+        throughput.prime(with: .init(interface: bsd, rxBytes: c.rxBytes, txBytes: c.txBytes),
+                         atNanoseconds: DispatchTime.now().uptimeNanoseconds)
     }
 
     private struct LocalRead {
@@ -189,39 +182,18 @@ final class NetworkReader: NSObject, ObservableObject {
         var info = self.info      // preserve latency / public-IP / detail fields already populated
         info.interfaceName = r.bsd
 
-        if let c = r.counters, let bsd = r.bsd {
-            // Reset the baseline when the interface changed or the counters ran backwards (an
-            // interface bounce restarts them at 0), so "total" never goes negative / absurd.
-            if baselineBSD != bsd || c.rxBytes < baselineRx || c.txBytes < baselineTx {
-                baselineBSD = bsd
-                baselineRx = c.rxBytes; baselineTx = c.txBytes
-                lastRx = c.rxBytes; lastTx = c.txBytes
-                lastSampleTime = DispatchTime.now()
-            }
-            info.downloadTotal = c.rxBytes - baselineRx
-            info.uploadTotal = c.txBytes - baselineTx
-
-            let now = DispatchTime.now()
-            if let last = lastSampleTime {
-                let dt = Double(now.uptimeNanoseconds - last.uptimeNanoseconds) / 1_000_000_000
-                if dt > 0.2 {
-                    info.downloadRate = Double(c.rxBytes >= lastRx ? c.rxBytes - lastRx : 0) / dt
-                    info.uploadRate = Double(c.txBytes >= lastTx ? c.txBytes - lastTx : 0) / dt
-                    lastRx = c.rxBytes; lastTx = c.txBytes
-                    lastSampleTime = now
-                }
-            } else {
-                lastSampleTime = now; lastRx = c.rxBytes; lastTx = c.txBytes
-            }
-        } else {
-            // No primary interface (fully disconnected): collapse the live rate to 0 so the menu-bar
-            // glyph doesn't keep drawing a frozen last value while the popover says "No active
-            // connection". Drop lastSampleTime so the next connection re-primes from its first sample
-            // instead of computing a huge delta across the offline gap. Totals are cumulative and stay.
-            info.downloadRate = 0
-            info.uploadRate = 0
-            lastSampleTime = nil
+        // Totals and rate: the tracker owns the baseline / previous-sample bookkeeping and every decision
+        // about it (interface switch, counter reset, too-short interval, disconnection). nil means no
+        // primary interface, which collapses the live rate while keeping the session totals.
+        var sample: ThroughputTracker.Sample?
+        if let bsd = r.bsd, let c = r.counters {
+            sample = .init(interface: bsd, rxBytes: c.rxBytes, txBytes: c.txBytes)
         }
+        let t = throughput.update(with: sample, atNanoseconds: DispatchTime.now().uptimeNanoseconds)
+        info.downloadTotal = t.downloadTotal
+        info.uploadTotal = t.uploadTotal
+        info.downloadRate = t.downloadRate
+        info.uploadRate = t.uploadRate
 
         // Interface / DNS / Wi-Fi detail only comes in on a full read; on the light (menu-bar-only)
         // path leave the previously-read values untouched rather than blanking them.

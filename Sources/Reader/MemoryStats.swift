@@ -33,30 +33,24 @@ enum MemoryStats {
         // would under-report every bucket by 4×.
         var pageSize: vm_size_t = 0
         guard host_page_size(host, &pageSize) == KERN_SUCCESS, pageSize > 0 else { return nil }
-        let page = Double(pageSize)
-        var info = MemoryInfo()
-        info.total = total
-        info.wired = bytes(stats.wire_count, page)
-        info.compressed = bytes(stats.compressor_page_count, page)
-        // App Memory = resident anonymous pages that aren't purgeable. purgeable is a subset of
-        // internal, but guard the subtraction so a transient race can't underflow the UInt32.
-        let appPages = Double(stats.internal_page_count) - Double(stats.purgeable_count)
-        info.app = UInt64(max(0, appPages) * page)
-        // "Cached Files" — resident file-backed pages, plus the purgeable pages just excluded from
-        // App Memory. Both hold data the kernel can drop on demand, but they are NOT free: without
-        // this bucket the Free remainder swallows them and the panel over-reports free RAM by
-        // gigabytes (measured 3.2 GB on a 16 GB M1 Pro), reading far more optimistically than
-        // Activity Monitor. Kept out of `used` so the menu-bar percentage is unaffected.
-        info.cached = bytes(stats.external_page_count, page) + bytes(stats.purgeable_count, page)
-
+        var swapUsed: UInt64 = 0
         if let swap: xsw_usage = Sysctl.value("vm.swapusage") {
-            info.swapUsed = swap.xsu_used
+            swapUsed = swap.xsu_used
         }
 
+        // Everything from here on is arithmetic, and it lives in MemoryBuckets (Sources/Core) where it
+        // is unit-tested. This function's job is only to gather the four numbers it needs.
+        var info = MemoryInfo()
+        info.buckets = MemoryBuckets.fromPages(
+            total: total,
+            pages: VMPageCounts(wired: stats.wire_count,
+                                compressed: stats.compressor_page_count,
+                                internalPages: stats.internal_page_count,
+                                purgeable: stats.purgeable_count,
+                                external: stats.external_page_count),
+            pageSize: UInt64(pageSize),
+            swapUsed: swapUsed
+        )
         return info
-    }
-
-    private static func bytes(_ pages: natural_t, _ pageSize: Double) -> UInt64 {
-        UInt64(Double(pages) * pageSize)
     }
 }

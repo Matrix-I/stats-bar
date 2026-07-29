@@ -36,7 +36,7 @@ final class CPUReader: ObservableObject {
     private var cachedFreq: CPUFrequency.Reading? = nil
 
     // Previous per-core [user, system, idle, nice] tick counts, for the delta computation.
-    private var prevTicks: [[UInt32]]? = nil
+    private var prevTicks: [CoreTicks]? = nil
 
     // Fixed for the machine's lifetime.
     private let eCoreCount: Int   // efficiency cores (perflevel1) — the low indices
@@ -140,38 +140,13 @@ final class CPUReader: ObservableObject {
         out.lowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
         out.loadAverage = Self.loadAverage(cores: cur.count)
 
-        if let prev = prevTicks, prev.count == cur.count {
-            let U = Int(CPU_STATE_USER), S = Int(CPU_STATE_SYSTEM), I = Int(CPU_STATE_IDLE), N = Int(CPU_STATE_NICE)
-            var sumUser = 0.0, sumSys = 0.0, sumIdle = 0.0, sumTotal = 0.0
-            var perCoreBusy = [Double](repeating: 0, count: cur.count)
-
-            for c in 0..<cur.count {
-                let du = Double(cur[c][U] &- prev[c][U])
-                let ds = Double(cur[c][S] &- prev[c][S])
-                let dn = Double(cur[c][N] &- prev[c][N])
-                let di = Double(cur[c][I] &- prev[c][I])
-                let total = du + ds + dn + di
-                sumUser += du + dn   // fold nice into user
-                sumSys += ds
-                sumIdle += di
-                sumTotal += total
-                perCoreBusy[c] = total > 0 ? (du + ds + dn) / total * 100 : 0
-            }
-
-            if sumTotal > 0 {
-                out.userPercent = sumUser / sumTotal * 100
-                out.systemPercent = sumSys / sumTotal * 100
-                out.idlePercent = sumIdle / sumTotal * 100
-            }
-
-            // Efficiency cores are the low indices [0, eCoreCount); performance cores follow.
-            if eCoreCount > 0, eCoreCount <= cur.count {
-                out.efficiencyPercent = perCoreBusy[0..<eCoreCount].reduce(0, +) / Double(eCoreCount)
-            }
-            if pCoreCount > 0, eCoreCount + pCoreCount <= cur.count {
-                out.performancePercent = perCoreBusy[eCoreCount..<(eCoreCount + pCoreCount)].reduce(0, +) / Double(pCoreCount)
-            }
-            out.perCoreBusy = perCoreBusy
+        // The delta arithmetic lives in CPULoad (Sources/Core), where it is unit-tested. A nil result
+        // means the two samples weren't comparable, and leaving `out.load` at its defaults is what the
+        // panel wants then: idle 100, no per-core bars, no cluster averages.
+        if let prev = prevTicks,
+           let load = CPULoad.between(previous: prev, current: cur,
+                                      efficiencyCores: eCoreCount, performanceCores: pCoreCount) {
+            out.load = load
         }
         prevTicks = cur
 
@@ -246,8 +221,10 @@ final class CPUReader: ObservableObject {
 
     // MARK: - Sampling
 
-    /// Per-core tick counters as [core][CPU_STATE_*]. Frees the kernel-allocated array via vm_deallocate.
-    private func sampleTicks() -> [[UInt32]]? {
+    /// Per-core tick counters. Frees the kernel-allocated array via vm_deallocate. The CPU_STATE_*
+    /// indices are resolved into named fields here so that CPULoad — which does the arithmetic — needs no
+    /// knowledge of Mach's array layout.
+    private func sampleTicks() -> [CoreTicks]? {
         var count = natural_t(0)
         var infoArray: processor_info_array_t?
         var infoCount = mach_msg_type_number_t(0)
@@ -267,7 +244,10 @@ final class CPUReader: ObservableObject {
         let buf = UnsafeBufferPointer(start: infoArray, count: Int(infoCount))
         let states = Int(CPU_STATE_MAX)
         return (0..<Int(count)).map { core in
-            (0..<states).map { UInt32(bitPattern: buf[core * states + $0]) }
+            let base = core * states
+            func tick(_ state: Int32) -> UInt32 { UInt32(bitPattern: buf[base + Int(state)]) }
+            return CoreTicks(user: tick(CPU_STATE_USER), system: tick(CPU_STATE_SYSTEM),
+                             idle: tick(CPU_STATE_IDLE), nice: tick(CPU_STATE_NICE))
         }
     }
 
@@ -291,30 +271,11 @@ final class CPUReader: ObservableObject {
     /// three renderings are redundant, so collapsing them to one is right whichever one is picked.
     ///
     /// Falls back to every Tp key when nothing matches the pattern, so an unfamiliar chip still gets
-    /// a temperature rather than none.
+    /// a temperature rather than none. SMCKeyName owns the name arithmetic — it's the half of this
+    /// that runs without an SMC, and therefore the half under unit test.
     private static func discoverTemperatureKeys(_ smc: SMC) -> [String] {
-        let all = smc.allKeyNames()
-        let apple = all.filter { $0.count == 4 && $0.hasPrefix("Tp") }
-        if !apple.isEmpty {
-            let zones = apple.filter { (smcIndex($0) ?? 0) % 4 == 1 }
-            guard !zones.isEmpty else { return apple.sorted() }
-            return zones.sorted { (smcIndex($0) ?? 0) < (smcIndex($1) ?? 0) }
-        }
+        if let apple = SMCKeyName.cpuThermalKeys(from: smc.allKeyNames()) { return apple }
         let intel = ["TC0P", "TC0D", "TC0E", "TC0F", "TC0H", "TC1C", "TC2C", "TC3C", "TC4C", "TCXC", "TCAD"]
         return intel.filter { smc.readFloat($0) != nil }
-    }
-
-    /// The alphabet the SMC counts key indices in — decimal digits, then upper case, then lower.
-    private static let base62 = Array("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")
-
-    /// The two-character numeric suffix of a 4-char SMC key, as a number. nil when either character
-    /// falls outside the alphabet, so a key that doesn't follow the convention is skipped rather than
-    /// silently mis-grouped.
-    private static func smcIndex(_ key: String) -> Int? {
-        let suffix = Array(key.dropFirst(2))
-        guard suffix.count == 2,
-              let hi = base62.firstIndex(of: suffix[0]),
-              let lo = base62.firstIndex(of: suffix[1]) else { return nil }
-        return hi * 62 + lo
     }
 }

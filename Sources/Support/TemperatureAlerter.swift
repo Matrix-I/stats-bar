@@ -29,17 +29,15 @@ final class TemperatureAlerter: NSObject, @preconcurrency UNUserNotificationCent
     /// Static and internal so the settings toggle can name the real number instead of keeping a
     /// second, hand-written copy of it — the toggle used to read "(39°C)" as a literal, which would
     /// have gone quietly wrong the moment this line changed.
-    static let hotThresholdC: Double = 39.0
+    static let hotThresholdC: Double = HotDeviceAlertPolicy.defaultThresholdC
     /// The threshold as it appears in UI text, so every mention formats identically.
     static var hotThresholdText: String { String(format: "%.0f°C", hotThresholdC) }
-    /// Re-arm only after the battery cools this far below the threshold, so a reading hovering
-    /// around 39 °C doesn't fire a fresh alert every second.
-    private let rearmMarginC: Double = 2.0
 
-    /// UDIDs currently in the "already alerted" state — cleared once the device cools past the
-    /// re-arm point or disconnects, so the next heat-up alerts again. Main-thread only (check() is
-    /// always called from IOSDeviceReader.publish, which runs on main).
-    private var alerted: Set<String> = []
+    /// When to alert — the threshold, the re-arm margin, and which UDIDs have already been warned about.
+    /// Lives in Sources/Core (HotDeviceAlertPolicy) so the hysteresis is unit-tested; this class keeps
+    /// only the delivery. Main-thread only (check() is always called from IOSDeviceReader.publish, which
+    /// runs on main).
+    private var policy = HotDeviceAlertPolicy()
 
     /// A bundled .app has a bundle identifier for UNUserNotificationCenter to post as; a bare
     /// binary has none, so it goes straight to the HUD fallback.
@@ -76,20 +74,9 @@ final class TemperatureAlerter: NSObject, @preconcurrency UNUserNotificationCent
 
     /// Call on the main thread with the freshly-read devices.
     func check(_ devices: [IOSDeviceInfo]) {
-        // Forget devices that are no longer present so a reconnected hot device alerts again.
-        alerted.formIntersection(Set(devices.map(\.id)))
-
-        guard enabled else { alerted.removeAll(); return }
-
-        for device in devices {
-            // Locked / partial reads leave temperatureC nil — nothing to judge, skip them.
-            guard let temp = device.temperatureC else { continue }
-            if temp >= Self.hotThresholdC {
-                if alerted.insert(device.id).inserted { notify(device: device, temp: temp) }
-            } else if temp <= Self.hotThresholdC - rearmMarginC {
-                alerted.remove(device.id)
-            }
-        }
+        let due = policy.devicesToAlert(devices, enabled: enabled,
+                                        id: \.id, temperature: \.temperatureC)
+        for (device, temp) in due { notify(device: device, temp: temp) }
     }
 
     private func notify(device: IOSDeviceInfo, temp: Double) {

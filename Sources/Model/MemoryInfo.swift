@@ -32,44 +32,31 @@ enum MemoryPressure {
 }
 
 struct MemoryInfo {
-    var total: UInt64 = 0        // bytes — physical RAM (hw.memsize)
-    var app: UInt64 = 0          // bytes — "App Memory": resident anonymous, non-purgeable
-    var wired: UInt64 = 0        // bytes — wired down (kernel / pinned)
-    var compressed: UInt64 = 0   // bytes — held by the VM compressor
-    var cached: UInt64 = 0       // bytes — "Cached Files": file-backed + purgeable, reclaimable
-    var swapUsed: UInt64 = 0     // bytes — swap in use
+    /// The byte figures and every quantity derived from them. Lives in Sources/Core (MemoryBuckets) so
+    /// it can be unit-tested — this type can't be, since MemoryProcess pulls in AppKit.
+    var buckets = MemoryBuckets()
     var pressure: MemoryPressure = .normal   // authoritative macOS pressure level (set by the reader)
 
     // The heaviest memory consumers right now (from `ps`, popover-only — see MemoryReader).
     var topProcesses: [MemoryProcess] = []
 
-    // Memory Used = App + Wired + Compressed (Activity Monitor's definition). Plain `+`: these are
-    // three fractions of physical RAM, so the sum can't come near UInt64's ceiling — and were that
-    // assumption ever to break, trapping beats a silent wrap.
-    var used: UInt64 { app + wired + compressed }
+    // Read-only forwards, so the panels and the menu-bar label keep reading `info.free` rather than
+    // `info.buckets.free` at some twenty call sites. Nothing is computed here: every one of these is
+    // MemoryBuckets' own property, and that is the only place the arithmetic exists.
+    var total: UInt64      { buckets.total }
+    var app: UInt64        { buckets.app }
+    var wired: UInt64      { buckets.wired }
+    var compressed: UInt64 { buckets.compressed }
+    var cached: UInt64     { buckets.cached }
+    var swapUsed: UInt64   { buckets.swapUsed }
+    var used: UInt64       { buckets.used }
+    var free: UInt64       { buckets.free }
 
-    // Everything left once the three "used" buckets and the file cache are accounted for: truly-free
-    // plus speculative pages. Guarded because `used + cached` can edge past `total` — a wired
-    // anonymous page is counted in both `wired` and `app`, and the read isn't a single atomic
-    // snapshot. Cached files used to land here, which is why Free read several GB too high.
-    var free: UInt64 { total > used + cached ? total - used - cached : 0 }
-
-    // Fractions of total physical RAM (0…1) for the segmented bar. Free is drawn as the remainder.
-    var appFraction: Double        { fraction(app) }
-    var wiredFraction: Double      { fraction(wired) }
-    var compressedFraction: Double { fraction(compressed) }
-    var cachedFraction: Double     { fraction(cached) }
-
-    // Used share of physical RAM (0…1) and the same figure as a percentage, for the usage ring.
-    var usedFraction: Double { fraction(used) }
-    var usagePercent: Double { usedFraction * 100 }
-
-    // A continuous 0…1 proxy for the pressure ring's arc: the share of RAM that can't simply be
-    // reclaimed on demand (wired + compressed). It grows as real pressure builds, so the arc tracks
-    // the state — but the colour and word come from `pressure`, the authoritative kernel level.
-    var pressureFraction: Double { fraction(wired + compressed) }
-
-    private func fraction(_ v: UInt64) -> Double {
-        total > 0 ? Double(v) / Double(total) : 0
-    }
+    var appFraction: Double        { buckets.appFraction }
+    var wiredFraction: Double      { buckets.wiredFraction }
+    var compressedFraction: Double { buckets.compressedFraction }
+    var cachedFraction: Double     { buckets.cachedFraction }
+    var usedFraction: Double       { buckets.usedFraction }
+    var usagePercent: Double       { buckets.usagePercent }
+    var pressureFraction: Double   { buckets.pressureFraction }
 }
