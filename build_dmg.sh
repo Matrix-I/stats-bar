@@ -9,6 +9,12 @@ APP=StatsBar
 DMG="$APP.dmg"
 VOL="$APP"
 
+# 0. Never package a red suite. This is the only real gate on the release path: CI reports on pushes
+#    to main but does not block them, and update_appcast.sh publishes straight to the feed that every
+#    installed copy polls, so there is no staging step between a bad build and users. `set -e` above
+#    means a failing test stops the DMG from being built at all.
+./run_tests.sh
+
 # 1. Build the .app bundle (compile + bundle + ad-hoc sign). --no-launch: just package it,
 #    don't relaunch the local build (that only makes sense for a dev build, not DMG packaging).
 ./build_app.sh --no-launch

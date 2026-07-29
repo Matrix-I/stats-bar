@@ -20,12 +20,15 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Action majors are pinned rather than floating, and they need to stay on a Node 24 or later runtime:
+# GitHub deprecated Node 20 and force-runs those actions on 24 with a warning, so anything still on a
+# v4 line annotates every run and will eventually stop working.
 jobs:
   tests:
     name: Unit tests (Sources/Core)
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Printed so a toolchain-shaped failure is diagnosable from the log alone. swift-testing
       # (`import Testing`) needs Swift 6.0+, which is Xcode 16 and later.
@@ -36,24 +39,37 @@ jobs:
 
       # run_tests.sh also enforces the Sources/Core purity rule (no I/O imports, no ObservableObject) and
       # fails the job when it is broken — that rule is what keeps these tests deterministic.
+      #
+      # The exit code alone does not make this a gate: a target that compiles but holds no tests exits 0,
+      # so deleting Tests/ or pointing Package.swift at an empty directory would read as success. Assert
+      # a non-zero count too. `set -o pipefail` is load-bearing — the default shell here is `bash -e`,
+      # where tee's success would otherwise mask a failing suite.
       - name: Run tests
-        run: ./run_tests.sh
+        run: |
+          set -o pipefail
+          ./run_tests.sh | tee "$RUNNER_TEMP/tests.log"
+          grep -qE 'Test run with [1-9][0-9]* tests in [1-9][0-9]* suites passed' "$RUNNER_TEMP/tests.log"
 
   build:
     name: Build the app
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # ~15 MB, and .gitignored rather than committed, so it is re-fetched per run. Cached because it is
       # pinned to one version — a cache hit makes this step a no-op.
+      #
+      # The key is derived from fetch_sparkle.sh rather than naming the version, because that script is
+      # where SPARKLE_VERSION actually lives. A literal `sparkle-2.9.4` here would have to be edited in
+      # step with it, and forgetting to would leave CI restoring the old framework and building green
+      # against a version nobody ships.
       - name: Cache Sparkle
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             Frameworks
             .sparkle-tools
-          key: sparkle-2.9.4
+          key: sparkle-${{ hashFiles('fetch_sparkle.sh') }}
 
       # --no-launch stops the script relaunching the app, which is the only part of it that makes no sense
       # on a runner. Everything else runs for real: swiftc over every file in Sources/, linking Sparkle,

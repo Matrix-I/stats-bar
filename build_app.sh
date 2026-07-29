@@ -138,8 +138,13 @@ fi
 # the app bundle around it. Ad-hoc ('-') signing is tolerated on failure; a real identity must succeed.
 SPARKLE_FW="$APP.app/Contents/Frameworks/Sparkle.framework"
 if [ "$SIGN_TO" = "-" ]; then
-    codesign --force --deep -s - "$SPARKLE_FW" 2>/dev/null || true
-    codesign --force -s - "$APP.app" 2>/dev/null || true
+    # `|| ...` alone is what tolerates the failure; the 2>/dev/null this used to carry additionally
+    # threw away the reason. That matters because ad-hoc is the branch CI takes — a runner keychain has
+    # no "StatsBar Local" — so a signing failure there showed up only afterwards as a bare
+    # `codesign --verify` error with its diagnostic already discarded, and would not reproduce locally,
+    # where the other branch is fatal and loud.
+    codesign --force --deep -s - "$SPARKLE_FW" || echo "⚠️  ad-hoc codesign of Sparkle.framework failed"
+    codesign --force -s - "$APP.app" || echo "⚠️  ad-hoc codesign of $APP.app failed"
 else
     codesign --force --deep -s "$SIGN_TO" "$SPARKLE_FW"
     codesign --force -s "$SIGN_TO" "$APP.app"
