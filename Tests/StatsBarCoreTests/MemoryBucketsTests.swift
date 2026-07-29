@@ -77,10 +77,11 @@ struct MemoryBucketsTests {
         #expect(b.app + b.cached == (100 + 60) * 4_096)
     }
 
-    @Test("App Memory clamps at zero rather than wrapping when purgeable exceeds internal")
+    @Test("App Memory clamps at zero rather than trapping when purgeable exceeds internal")
     func appMemoryDoesNotUnderflow() {
         // The counts aren't one atomic snapshot, so purgeable CAN briefly read higher than internal.
-        // On UInt32 that subtraction wraps to ~4 billion pages — a 68 TB App Memory figure, or a trap.
+        // Unsigned `-` traps in Swift, so the unguarded subtraction is a crash rather than the 68 TB
+        // App Memory figure ~4 billion wrapped pages would print.
         let pages = VMPageCounts(internalPages: 10, purgeable: 50)
         let b = MemoryBuckets.fromPages(total: 1 << 30, pages: pages, pageSize: 4_096)
         #expect(b.app == 0)
@@ -107,7 +108,7 @@ struct MemoryBucketsTests {
     @Test("Free clamps at zero when the buckets overlap past total")
     func freeDoesNotUnderflow() {
         // A wired anonymous page is counted in both `wired` and `app`, so used + cached can edge past
-        // total. Unguarded, UInt64 subtraction wraps and Free reads as 16 exabytes.
+        // total. Unguarded, the UInt64 subtraction traps and takes the app down mid-refresh.
         let b = MemoryBuckets(total: 1000, app: 800, wired: 300, compressed: 0, cached: 100)
         #expect(b.used == 1100)
         #expect(b.free == 0)

@@ -50,7 +50,9 @@ struct MemoryBuckets: Equatable {
         out.wired = bytes(pages.wired)
         out.compressed = bytes(pages.compressed)
         // purgeable is a subset of internalPages, but guard the subtraction: the read isn't one atomic
-        // snapshot, so a transient race could otherwise underflow and wrap to an enormous figure.
+        // snapshot, so a transient race can leave purgeable the larger of the two. Unsigned `-` TRAPS
+        // in Swift, and build_app.sh ships -O rather than -Ounchecked, so unguarded this is a crash
+        // during a routine refresh — not the 68 TB App Memory figure a wrapping subtraction would give.
         out.app = bytes(pages.internalPages >= pages.purgeable
                         ? pages.internalPages - pages.purgeable : 0)
         // "Cached Files" — resident file-backed pages, plus the purgeable pages just excluded from App

@@ -110,6 +110,8 @@ struct FormattingTests {
         (1500.0, "2", "KB/s"),               // KB/s rounds to whole
         (1_500_000.0, "1.5", "MB/s"),        // small MB/s keeps one decimal…
         (15_000_000.0, "15", "MB/s"),        // …but 10 MB/s and up doesn't
+        (9_999_999.0, "10.0", "MB/s"),       // just under the switch: one decimal, rendered "10.0"
+        (10_000_000.0, "10", "MB/s"),        // and exactly on it: whole. `value < 10`, not <=
         (5_000_000_000_000.0, "5000", "GB/s"),   // no unit beyond GB/s exists, so it stops there
         (-42.0, "0", "B/s"),                 // negative clamps instead of printing "-0"
     ])

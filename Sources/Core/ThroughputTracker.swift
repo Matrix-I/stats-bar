@@ -102,7 +102,8 @@ struct ThroughputTracker {
         guard dt > Self.minimumInterval else { return reading }
 
         // The >= guards catch a counter that reset between two samples without the interface name
-        // changing: report no traffic for that interval rather than a wrapped, enormous rate.
+        // changing: report no traffic for that interval rather than trapping on the negative delta,
+        // which is what a plain unsigned subtraction does in Swift.
         reading.downloadRate = Double(sample.rxBytes >= lastRx ? sample.rxBytes - lastRx : 0) / dt
         reading.uploadRate = Double(sample.txBytes >= lastTx ? sample.txBytes - lastTx : 0) / dt
         lastRx = sample.rxBytes

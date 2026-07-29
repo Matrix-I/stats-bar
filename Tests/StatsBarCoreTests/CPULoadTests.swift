@@ -65,6 +65,20 @@ struct CPULoadTests {
         #expect(CPULoad().performancePercent == nil)
     }
 
+    @Test("usagePercent clamps an idle figure that did not come from `between`")
+    func usagePercentClampsOutOfRange() {
+        // `between` already constrains idlePercent to 0…100, so every other case in this file reaches
+        // usagePercent through a value that was in range and the clamp never runs. It is not dead code:
+        // idlePercent is a plain `var` on an internal struct, so a reader can assign one directly, and
+        // the clamp is the only thing standing between that and a negative bar width or a menu-bar
+        // glyph reading over 100 %.
+        var load = CPULoad()
+        load.idlePercent = 120
+        #expect(load.usagePercent == 0)
+        load.idlePercent = -20
+        #expect(load.usagePercent == 100)
+    }
+
     // MARK: The System / User / Idle split
 
     @Test("nice time folds into user so the three shares still sum to 100")
@@ -135,6 +149,33 @@ struct CPULoadTests {
         let load = Self.derive(deltas, efficiencyCores: 2, performanceCores: 6)
         #expect(load?.efficiencyPercent == 50)   // this cluster still fits
         #expect(load?.performancePercent == nil) // 2 + 6 > 4, so it is declined
+    }
+
+    @Test("the performance cluster is declined only once the efficiency offset is counted")
+    func performanceGuardCountsFromTheEfficiencyOffset() {
+        // The case above passes for the wrong reason: 6 performance cores overrun 4 enumerated cores on
+        // their own, so a guard that forgot the efficiency offset entirely would also decline it. The
+        // case that pins the offset is a performance count that FITS by itself (4 <= 4) and overruns
+        // only with the two efficiency cores in front of it. Checking `performanceCores <= count`
+        // instead of `efficiencyCores + performanceCores <= count` slices perCoreBusy[2..<6] of a
+        // 4-element array, which traps — the crash the guard's own comment says it prevents.
+        let deltas = Array(repeating: CoreTicks(user: 50, system: 0, idle: 50, nice: 0), count: 4)
+        let load = Self.derive(deltas, efficiencyCores: 2, performanceCores: 4)
+        #expect(load?.performancePercent == nil)
+        #expect(load?.efficiencyPercent == 50)   // the cluster in front of it is unaffected
+    }
+
+    @Test("a machine whose every core is an efficiency core still gets that row")
+    func efficiencyClusterMayCoverEveryCore() {
+        // The inclusive end of the efficiency guard, which nothing else reaches — every other cluster
+        // case here leaves slack (2 of 8, 2 of 4). `efficiencyCores == current.count` is a real
+        // configuration, not a contrivance: a chip that reports no performance level at all, or an
+        // all-E-core part. With `<` in place of `<=` the DETAILS efficiency row silently vanishes on
+        // exactly those machines, and on no others — so it would ship.
+        let deltas = Array(repeating: CoreTicks(user: 50, system: 0, idle: 50, nice: 0), count: 4)
+        let load = Self.derive(deltas, efficiencyCores: 4, performanceCores: 0)
+        #expect(load?.efficiencyPercent == 50)
+        #expect(load?.performancePercent == nil)
     }
 
     @Test("a chip reporting no clusters gets no cluster rows")

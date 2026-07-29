@@ -131,4 +131,15 @@ struct SMCKeyNameTests {
         // whatever it does publish — rather than none.
         #expect(SMCKeyName.cpuThermalKeys(from: ["Tp02", "Tp00"]) == ["Tp00", "Tp02"])
     }
+
+    @Test("the fallback list also excludes keys of the wrong length")
+    func fallbackAlsoRejectsWrongLength() {
+        // rejectsWrongLength above only exercises the zones path, where an over-long key is dropped
+        // incidentally rather than by the length filter: `index` needs exactly a two-character suffix,
+        // so it decodes to nil, becomes 0 via `?? 0`, and fails `% 4 == 1` whatever the filter does.
+        // The fallback returns `apple` itself, so `count == 4` is the ONLY thing keeping a malformed
+        // name out of the per-second SMC read loop — and the fallback is the path an unfamiliar chip
+        // takes, which is precisely where a malformed name is most likely to turn up.
+        #expect(SMCKeyName.cpuThermalKeys(from: ["Tp00", "Tp02", "Tp0Hxx"]) == ["Tp00", "Tp02"])
+    }
 }

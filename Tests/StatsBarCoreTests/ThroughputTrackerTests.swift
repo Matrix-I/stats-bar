@@ -87,13 +87,38 @@ struct ThroughputTrackerTests {
     @Test("an interface bounce that restarts the counters does not underflow the total")
     func counterResetRebaselines() {
         // The counters restart at 0 when an interface bounces. Without the rebaseline, `rxBytes -
-        // baselineRx` underflows and the session total reads as 16 exabytes.
+        // baselineRx` underflows — and unsigned `-` traps in Swift, so that is a crash, not a total
+        // reading 16 exabytes.
         var t = ThroughputTracker()
         t.prime(with: Self.sample(rx: 5_000_000, tx: 1_000_000), atNanoseconds: 0)
         let r = t.update(with: Self.sample(rx: 1_000, tx: 200), atNanoseconds: Self.second)
         #expect(r.downloadTotal == 0)   // rebaselined to the new, lower counter
         #expect(r.uploadTotal == 0)
         #expect(r.downloadRate == 0)    // and no rate measured on the restarting tick
+    }
+
+    @Test("a counter that restarts in one direction only still rebaselines")
+    func asymmetricCounterResetRebaselines() {
+        // The case above drops rx AND tx together, so either half of the `||` satisfies it on its own —
+        // it passes with one clause missing. Real resets are not symmetric: a driver reload can restart
+        // the rx counter while tx keeps climbing, and a send-heavy link primed at rx 0 never satisfies
+        // the rx clause at all. Getting this wrong is not a wrong number: the total is computed with a
+        // plain UInt64 subtraction, which traps, so a missed rebaseline crashes the app mid-refresh.
+        var rxDips = ThroughputTracker()
+        rxDips.prime(with: Self.sample(rx: 5_000_000, tx: 1_000_000), atNanoseconds: 0)
+        let afterRxDip = rxDips.update(with: Self.sample(rx: 1_000, tx: 2_000_000),
+                                       atNanoseconds: Self.second)
+        #expect(afterRxDip.downloadTotal == 0)
+        #expect(afterRxDip.uploadTotal == 0)   // the whole session restarts, not just the dipping half
+        #expect(afterRxDip.downloadRate == 0)
+
+        var txDips = ThroughputTracker()
+        txDips.prime(with: Self.sample(rx: 5_000_000, tx: 1_000_000), atNanoseconds: 0)
+        let afterTxDip = txDips.update(with: Self.sample(rx: 9_000_000, tx: 200),
+                                       atNanoseconds: Self.second)
+        #expect(afterTxDip.downloadTotal == 0)
+        #expect(afterTxDip.uploadTotal == 0)
+        #expect(afterTxDip.downloadRate == 0)
     }
 
     @Test("switching interface restarts the session rather than diffing across the two")
@@ -121,10 +146,11 @@ struct ThroughputTrackerTests {
         #expect(r.downloadTotal == 400_000)
     }
 
-    @Test("a counter that dips without the interface changing reports no traffic, not a wrapped rate")
+    @Test("a counter that dips without the interface changing reports no traffic rather than trapping")
     func rateGuardsAgainstBackwardCounters() {
-        // Distinct from the rebaseline path: here the counter is still above the baseline, so only the
-        // rate's own >= guard stands between the panel and a nonsense figure.
+        // Distinct from the rebaseline path: here the counter is still above the baseline, so the
+        // rebaseline never fires and the rate's own >= guard is the only thing left — and what it is
+        // guarding against is a trap, since the delta it feeds is a plain UInt64 subtraction.
         var t = ThroughputTracker()
         t.prime(with: Self.sample(rx: 1_000, tx: 1_000), atNanoseconds: 0)
         t.update(with: Self.sample(rx: 5_000, tx: 5_000), atNanoseconds: Self.second)
