@@ -56,6 +56,9 @@ struct BatteryDetailView: View {
 
     // Read by TemperatureAlerter (same key, same default) to decide whether to warn on a hot iPhone.
     @AppStorage("alertHotIPhone") private var alertHotIPhone = true
+    // Governs only the HUD fallback's sound; the native notification path follows macOS's own
+    // per-app notification sound setting. Read by TemperatureAlerter.soundEnabled.
+    @AppStorage("alertSound") private var alertSound = true
 
     // visibleFrame height of the screen the popover is *actually* shown on. MenuBarExtra can open
     // the popover on any display (in a multi-monitor setup it follows the active menu bar, not
@@ -454,7 +457,12 @@ struct BatteryDetailView: View {
                 Toggle("Show % in menu bar", isOn: $showMenuBarPercent)
                 Toggle("Show iPhone in menu bar", isOn: $showIPhoneMenuBar)
                 Toggle("Show Android in menu bar", isOn: $showAndroidMenuBar)
-                Toggle("Alert when iPhone battery is hot (39°C)", isOn: $alertHotIPhone)
+                // Threshold text comes from the alerter itself — see TemperatureAlerter.hotThresholdC.
+                Toggle("Alert when iPhone battery is hot (\(TemperatureAlerter.hotThresholdText))",
+                       isOn: $alertHotIPhone)
+                if alertHotIPhone {
+                    Toggle("Play a sound with alerts", isOn: $alertSound)
+                }
             }
             .font(.caption)
             .toggleStyle(.switch)

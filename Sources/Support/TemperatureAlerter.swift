@@ -25,7 +25,13 @@ import SwiftUI
 final class TemperatureAlerter: NSObject, @preconcurrency UNUserNotificationCenterDelegate {
     /// Notify once a battery reaches this. iOS itself already pauses charging when it runs hot;
     /// this is just a nudge to pull the cable sooner. Change here to retune the threshold.
-    private let hotThresholdC: Double = 39.0
+    ///
+    /// Static and internal so the settings toggle can name the real number instead of keeping a
+    /// second, hand-written copy of it — the toggle used to read "(39°C)" as a literal, which would
+    /// have gone quietly wrong the moment this line changed.
+    static let hotThresholdC: Double = 39.0
+    /// The threshold as it appears in UI text, so every mention formats identically.
+    static var hotThresholdText: String { String(format: "%.0f°C", hotThresholdC) }
     /// Re-arm only after the battery cools this far below the threshold, so a reading hovering
     /// around 39 °C doesn't fire a fresh alert every second.
     private let rearmMarginC: Double = 2.0
@@ -50,6 +56,13 @@ final class TemperatureAlerter: NSObject, @preconcurrency UNUserNotificationCent
         UserDefaults.standard.object(forKey: "alertHotIPhone") as? Bool ?? true
     }
 
+    /// Whether the HUD fallback plays a sound. On the native path macOS's own notification settings
+    /// decide; the HUD had no such control and simply played unconditionally, with nowhere to turn it
+    /// off. Defaults true to preserve the existing behaviour for anyone who never opens the toggle.
+    private var soundEnabled: Bool {
+        UserDefaults.standard.object(forKey: "alertSound") as? Bool ?? true
+    }
+
     override init() {
         super.init()
         // Ask up front so the permission prompt shows on first launch and the nicer native path can
@@ -71,9 +84,9 @@ final class TemperatureAlerter: NSObject, @preconcurrency UNUserNotificationCent
         for device in devices {
             // Locked / partial reads leave temperatureC nil — nothing to judge, skip them.
             guard let temp = device.temperatureC else { continue }
-            if temp >= hotThresholdC {
+            if temp >= Self.hotThresholdC {
                 if alerted.insert(device.id).inserted { notify(device: device, temp: temp) }
-            } else if temp <= hotThresholdC - rearmMarginC {
+            } else if temp <= Self.hotThresholdC - rearmMarginC {
                 alerted.remove(device.id)
             }
         }
@@ -139,12 +152,19 @@ final class TemperatureAlerter: NSObject, @preconcurrency UNUserNotificationCent
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.contentView = host
 
-        if let vf = NSScreen.main?.visibleFrame {
+        // Pin to the MENU-BAR screen, not NSScreen.main — "main" follows keyboard focus, so on a
+        // multi-display desk the alert appeared over whichever screen happened to be active rather
+        // than beside the menu bar the app lives in. Origin (0,0) identifies the menu-bar screen in
+        // AppKit's global space; the same trick BatteryDetailView uses to size the popover.
+        let menuBarScreen = NSScreen.screens.first(where: { $0.frame.origin == .zero })
+            ?? NSScreen.screens.first
+            ?? NSScreen.main
+        if let vf = menuBarScreen?.visibleFrame {
             panel.setFrameOrigin(NSPoint(x: vf.maxX - host.frame.width - 12,
                                          y: vf.maxY - host.frame.height - 12))
         }
         panel.orderFrontRegardless()   // show without activating (this is an accessory app)
-        NSSound(named: NSSound.Name("Basso"))?.play()
+        if soundEnabled { NSSound(named: NSSound.Name("Basso"))?.play() }
 
         hudPanel = panel
         // .common mode so the auto-dismiss still fires while a menu/popover is up (event-tracking).
@@ -164,6 +184,19 @@ final class TemperatureAlerter: NSObject, @preconcurrency UNUserNotificationCent
                                 willPresent notification: UNNotification,
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         completionHandler([.banner, .sound])
+    }
+
+    /// Without this, clicking the notification did nothing whatsoever: UNUserNotificationCenter needs
+    /// a didReceive implementation to route the response, so the banner just went away and the user
+    /// was left where they started. Bringing StatsBar forward is the useful action — the alert is
+    /// about a device whose readings live in the battery popover, one click away in the menu bar.
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        completionHandler()
     }
 }
 
