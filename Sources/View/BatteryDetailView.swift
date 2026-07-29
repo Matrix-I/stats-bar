@@ -141,10 +141,9 @@ struct BatteryDetailView: View {
             // Skipped entirely on fanless Macs (e.g. MacBook Air), so the battery header stays first there.
             if !i.fans.isEmpty {
                 SectionCaption("🌀 Fans (live)")
-                VStack(spacing: 6) {
-                    ForEach(Array(i.fans.enumerated()), id: \.offset) { idx, rpm in
-                        InfoRow(label: i.fans.count > 1 ? "Fan \(idx + 1)" : "Fan",
-                                value: "\(Int(rpm.rounded())) rpm")
+                VStack(spacing: 8) {
+                    ForEach(i.fans) { fan in
+                        FanRow(fan: fan, showIndex: i.fans.count > 1)
                     }
                 }
             }
@@ -200,7 +199,13 @@ struct BatteryDetailView: View {
             VStack(spacing: 6) {
                 InfoRow(label: "Full charge capacity", value: "\(i.maxCapacity) mAh")
                 InfoRow(label: "Design capacity", value: "\(i.designCapacity) mAh")
-                InfoRow(label: "Cycle count", value: "\(i.cycleCount)")
+                if let used = i.cycleLifeFraction {
+                    // The count on its own says nothing; against the pack's rated life it does.
+                    InfoRow(label: "Cycle count",
+                            value: "\(i.cycleCount) / \(i.designCycleCount) (\(Int((used * 100).rounded()))%)")
+                } else {
+                    InfoRow(label: "Cycle count", value: "\(i.cycleCount)")
+                }
                 if showMacFullDetails {
                     InfoRow(label: "Temperature",
                             value: String(format: "%.1f °C", i.temperatureC))
@@ -551,5 +556,43 @@ private struct ShowMoreButton: View {
         }
         .buttonStyle(.plain)
         .help(isOn ? "Show less" : "Show more")
+    }
+}
+
+/// One fan: speed on the top line, then a bar placing it within that fan's own min–max range and a
+/// caption spelling the range out. A bare RPM is unreadable — 2334 means nothing until you know the
+/// fan idles at 1200 and tops out at 5779 — and the target line makes a spin-up visible before it
+/// becomes audible. Degrades cleanly to just the RPM on a machine that publishes no limits.
+private struct FanRow: View {
+    let fan: FanInfo
+    let showIndex: Bool
+
+    private var label: String { showIndex ? "Fan \(fan.index + 1)" : "Fan" }
+    private func rpm(_ v: Double) -> String { "\(Int(v.rounded())) rpm" }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            InfoRow(label: label, value: rpm(fan.actual))
+
+            if let frac = fan.rangeFraction, let lo = fan.minimum, let hi = fan.maximum {
+                BarView(pct: frac * 100, color: barColor(frac))
+                HStack(spacing: 4) {
+                    Text("\(Int(lo.rounded()))–\(Int(hi.rounded())) rpm · \(Int((frac * 100).rounded()))%")
+                    if fan.isRamping, let t = fan.target {
+                        // Only worth the pixels while the controller and the fan disagree.
+                        Text("· → \(rpm(t))").foregroundStyle(fan.actual < t ? .orange : .secondary)
+                    }
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+            }
+        }
+    }
+
+    /// Green while the fan is loafing, amber once it is working, red near its ceiling — the same
+    /// read-at-a-glance ramp the temperature and capacity bars use.
+    private func barColor(_ frac: Double) -> Color {
+        frac < 0.4 ? .green : (frac < 0.75 ? .orange : .red)
     }
 }

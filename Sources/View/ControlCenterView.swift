@@ -27,6 +27,8 @@ struct ControlCenterView: View {
     @ObservedObject var memory: MemoryReader
     @ObservedObject var network: NetworkReader
     @ObservedObject var bluetooth: BluetoothReader
+    /// Not a metric: event-driven, no polling, and no menu-bar item of its own — see DisplaySection.
+    @ObservedObject var displays: DisplayReader
 
     /// Sparkle updater — backs the "Check for updates" button and the automatic-check toggle.
     let updater: Updater
@@ -68,6 +70,8 @@ struct ControlCenterView: View {
                 }
 
             overview
+
+            DisplaySection(displays: displays.displays)
 
             SectionCaption("MENU BAR ITEMS")
             menuBarToggles
@@ -213,7 +217,13 @@ struct ControlCenterView: View {
     /// each reader's typed `.info` still goes through the @ObservedObject properties above.)
     private var readers: [any MetricReader] { [battery, cpu, memory, network, bluetooth] }
 
-    private func refreshAll() { readers.forEach { $0.refresh() } }
+    /// DisplayReader isn't a MetricReader (no cadence to manage, nothing to gate on panel visibility),
+    /// but Refresh should still re-read it — a display woken from sleep can change mode without
+    /// posting a parameters notification.
+    private func refreshAll() {
+        readers.forEach { $0.refresh() }
+        displays.refresh()
+    }
 
     /// Forward the popover's visibility to every reader so they poll live while it's open (and drop
     /// back to their idle cadence when it closes). Bluetooth only polls while a panel is open, so

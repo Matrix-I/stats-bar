@@ -53,6 +53,15 @@ final class CPUReader: ObservableObject {
 
     private static let idleInterval: TimeInterval = 2   // menu-bar % only
     private static let activeInterval: TimeInterval = 1 // live readout while the panel is open
+    // Low Power Mode: back the menu-bar-only poll off further. The user has explicitly asked macOS to
+    // trade responsiveness for battery, and a background sampler is exactly the sort of thing that
+    // should take the hint — a stats app that ignores it is working against its own subject.
+    private static let lowPowerIdleInterval: TimeInterval = 5
+
+    /// Observer tokens for the two event-driven power signals. Held for the reader's lifetime, which
+    /// is the app's — same as AppDelegate's defaultsObserver.
+    private var thermalObserver: NSObjectProtocol?
+    private var powerObserver: NSObjectProtocol?
 
     init() {
         eCoreCount = Sysctl.int("hw.perflevel1.logicalcpu") ?? 0
@@ -62,6 +71,20 @@ final class CPUReader: ObservableObject {
 
         applyCadence()   // start the idle poll (item visible by default) and mark `polling`
         refresh()        // prime the per-core tick baseline
+
+        // Thermal pressure and Low Power Mode are pushed by the system, so neither needs polling.
+        // The power-state hook also re-applies the cadence, so entering Low Power Mode slows the
+        // sampler immediately instead of at the next unrelated toggle.
+        thermalObserver = NotificationCenter.default.addObserver(
+            forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refresh() }
+        }
+        powerObserver = NotificationCenter.default.addObserver(
+            forName: Notification.Name.NSProcessInfoPowerStateDidChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.applyCadence(); self?.refresh() }
+        }
     }
 
     /// Poll fast while the panel is visible (and read temperature); drop to the lazy menu-bar-only
@@ -95,7 +118,10 @@ final class CPUReader: ObservableObject {
         if shouldPoll && !polling { prevTicks = nil }
         polling = shouldPoll
         if panelOpen { poll.schedule(every: Self.activeInterval) }
-        else if itemVisible { poll.schedule(every: Self.idleInterval) }
+        else if itemVisible {
+            poll.schedule(every: ProcessInfo.processInfo.isLowPowerModeEnabled
+                          ? Self.lowPowerIdleInterval : Self.idleInterval)
+        }
         else { poll.stop() }
     }
 
@@ -110,6 +136,9 @@ final class CPUReader: ObservableObject {
         out.performanceCoreCount = pCoreCount
         out.chipName = chipName
         out.uptimeSeconds = Sysctl.uptime()
+        out.thermalState = ProcessInfo.processInfo.thermalState
+        out.lowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
+        out.loadAverage = Self.loadAverage(cores: cur.count)
 
         if let prev = prevTicks, prev.count == cur.count {
             let U = Int(CPU_STATE_USER), S = Int(CPU_STATE_SYSTEM), I = Int(CPU_STATE_IDLE), N = Int(CPU_STATE_NICE)
@@ -197,6 +226,17 @@ final class CPUReader: ObservableObject {
             if result.count >= count { break }
         }
         return result
+    }
+
+    /// The 1/5/15-minute load averages, divided by the logical core count (see CPUInfo.loadAverage
+    /// for why normalising is not optional). Uses getloadavg(3) rather than sysctl "vm.loadavg" —
+    /// that name returns a `loadavg` struct, so reading it through Sysctl.int would silently decode
+    /// the wrong bytes.
+    nonisolated private static func loadAverage(cores: Int) -> [Double] {
+        guard cores > 0 else { return [] }
+        var raw = [Double](repeating: 0, count: 3)
+        guard getloadavg(&raw, 3) == 3 else { return [] }
+        return raw.map { $0 / Double(cores) }
     }
 
     // MARK: - Sampling

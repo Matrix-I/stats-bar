@@ -50,6 +50,19 @@ struct CPUInfo {
     // Seconds since the machine last booted.
     var uptimeSeconds: Double = 0
 
+    // System-wide thermal pressure (ProcessInfo.thermalState). Event-driven, not polled: macOS posts
+    // thermalStateDidChangeNotification, so this costs nothing while the machine stays cool.
+    var thermalState: ProcessInfo.ThermalState = .nominal
+
+    // Whether macOS Low Power Mode is on. Also drives CPUReader's idle poll cadence.
+    var lowPowerMode = false
+
+    // 1-, 5- and 15-minute load averages, ALREADY divided by the logical core count. Normalised on
+    // purpose: a raw 8.0 is full utilisation on an 8-core and 2× oversubscription on a 4-core, so the
+    // unnormalised number reads like an alarm on one machine and a shrug on another. Empty when the
+    // kernel doesn't answer.
+    var loadAverage: [Double] = []
+
     // The heaviest CPU consumers right now (from `ps`, refreshed a little slower than the load).
     var topProcesses: [ProcessSample] = []
 

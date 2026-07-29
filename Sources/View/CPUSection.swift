@@ -148,11 +148,51 @@ struct CPUDetailView: View {
                 LegendRow(color: CPUPalette.performance, label: "Performance cores", value: pct(perf))
             }
 
+            LegendRow(color: thermalColor(info.thermalState), label: "Thermal",
+                      value: thermalText(info.thermalState))
+            if info.lowPowerMode {
+                InfoRow(label: "Low Power Mode", value: "On")
+            }
+            if info.loadAverage.count == 3 {
+                // "/ core" is load-bearing, not decoration: `uptime`, Activity Monitor and every
+                // other tool print the RAW load average, so an unqualified "Load avg" here would
+                // disagree with all of them by a factor of coreCount and look like a bug.
+                InfoRow(label: "Load avg / core (1/5/15m)", value: loadText(info.loadAverage))
+            }
             InfoRow(label: "Uptime", value: fmtUptime(info.uptimeSeconds))
         }
     }
 
     private func pct(_ v: Double) -> String { String(format: "%.0f%%", v) }
+
+    /// Per-core load, so 1.00 means "exactly as much runnable work as this machine has cores".
+    private func loadText(_ v: [Double]) -> String {
+        v.map { String(format: "%.2f", $0) }.joined(separator: " / ")
+    }
+
+    private func thermalText(_ s: ProcessInfo.ThermalState) -> String {
+        switch s {
+        case .nominal:    return "Nominal"
+        case .fair:       return "Fair"
+        case .serious:    return "Serious"
+        case .critical:   return "Critical"
+        @unknown default: return "Unknown"
+        }
+    }
+
+    /// Deliberately a popover row rather than a menu-bar tint: the CPU glyph is rendered as a
+    /// template image (see MenuBar.symbolPercentMenuBarImage), which macOS recolours monochrome, so
+    /// "turn the glyph orange" would mean abandoning template rendering and folding appearance into
+    /// the glyph cache key — a rewrite far out of proportion to the signal.
+    private func thermalColor(_ s: ProcessInfo.ThermalState) -> Color {
+        switch s {
+        case .nominal:    return .green
+        case .fair:       return .yellow
+        case .serious:    return .orange
+        case .critical:   return .red
+        @unknown default: return CPUPalette.idle
+        }
+    }
 
     // MARK: Cores
 

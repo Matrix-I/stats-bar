@@ -33,6 +33,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let cpuReader = CPUReader()
     private let memoryReader = MemoryReader()
     private let bluetoothReader = BluetoothReader()
+    // Event-driven rather than polled, and shown only inside the Control Center hub — so it has no
+    // menu-bar item and isn't a StatMetric.
+    private let displayReader = DisplayReader()
     private let updater = Updater()
 
     /// One toggleable metric's menu-bar item: its status item, its detail popover, the UserDefaults
@@ -112,6 +115,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         configure(popover: controlCenterPopover,
                   root: ControlCenterView(battery: batteryReader, cpu: cpuReader, memory: memoryReader,
                                           network: networkReader, bluetooth: bluetoothReader,
+                                          displays: displayReader,
                                           updater: updater,
                                           openDetail: { [weak self] metric in self?.presentDetail(metric) },
                                           checkForUpdates: { [weak self] in

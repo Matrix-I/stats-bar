@@ -132,6 +132,9 @@ final class BatteryReader: ObservableObject {
         }
 
         i.cycleCount = intOf(props["CycleCount"])
+        // Rated cycle life. Apple names it DesignCycleCount9C (1000 on this M1 Pro); it sits in the
+        // dictionary already fetched above, so reading it costs nothing.
+        i.designCycleCount = intOf(props["DesignCycleCount9C"])
         // Signed like Amperage below: a sub-zero battery (a cold car overnight) comes back as an
         // unsigned 32-bit two's complement value, which read unsigned would land around 43 million °C.
         i.temperatureC = Double(signedIntOf(props["Temperature"])) / 100.0

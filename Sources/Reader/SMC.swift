@@ -99,12 +99,9 @@ final class SMC {
             var infoIn = Param(); infoIn.key = k; infoIn.data8 = Self.readKeyInfo
             var infoOut = Param()
             guard call(&infoIn, &infoOut), infoOut.result == 0 else { return nil }
-            // Accept a little-endian Float32 (`flt `, size 4 — the Apple-Silicon rails/temps and fan
-            // RPM) or a big-endian signed 8.8 fixed-point (`sp78`, size 2 — the classic Intel CPU-die
-            // temperature keys like TC0P/TC0D). Any other layout (or a missing key) stays uncached so
-            // it keeps probing and is picked up if it ever appears.
-            let dt = infoOut.keyInfo.dataType, sz = infoOut.keyInfo.dataSize
-            guard (dt == fourCC("flt ") && sz == 4) || (dt == fourCC("sp78") && sz == 2) else { return nil }
+            // An unsupported layout (or a missing key) stays uncached so it keeps probing and is
+            // picked up if it ever appears.
+            guard isSupported(infoOut.keyInfo) else { return nil }
             keyInfo = infoOut.keyInfo
             keyInfoCache[key] = keyInfo
         }
@@ -112,17 +109,55 @@ final class SMC {
         var readIn = Param(); readIn.key = k; readIn.keyInfo = keyInfo; readIn.data8 = Self.readBytes
         var readOut = Param()
         guard call(&readIn, &readOut), readOut.result == 0 else { return nil }
+        return decode(readOut, as: keyInfo)
+    }
 
-        if keyInfo.dataType == fourCC("sp78") {
-            // sp78: 2 bytes, big-endian, signed, 8 fractional bits — value is raw / 256 (°C for TC** keys).
-            let raw = Int16(bitPattern: (UInt16(readOut.bytes.0) << 8) | UInt16(readOut.bytes.1))
-            return Double(raw) / 256.0
+    /// Whether this reader understands a key's layout: `flt ` (little-endian Float32), `sp78`
+    /// (big-endian signed 8.8 fixed-point — the classic Intel CPU-die temperatures), and the two
+    /// SINGLE-BYTE integer types.
+    ///
+    /// Single-byte only, deliberately. Widening past `flt `/`sp78` is what makes `FNum` (the
+    /// authoritative fan count) and the `F<n>St` fan-state keys readable — both `ui8 `, both
+    /// previously nil — and one byte has no byte order to get wrong.
+    ///
+    /// The multi-byte integer types (ui16/ui32/si16/si32) are NOT accepted, because their byte order
+    /// is not uniform across the SMC and a blanket per-type rule would silently return garbage.
+    /// Measured on this M1 Pro against AppleSmartBattery as ground truth, the DATA keys are
+    /// little-endian: B0CT raw 33 01 → 307 = CycleCount, B0DC raw bb 17 → 6075 = DesignCapacity,
+    /// B0FC raw b7 13 → 5047 = AppleRawMaxCapacity — three exact matches. But `#KEY`, also ui32,
+    /// is BIG-endian (raw 00 00 08 04 → 2052 keys; byte-swapped it is nonsense), which is why
+    /// allKeyNames below decodes it big-endian and gets the right answer. Two orders in one
+    /// interface means the type alone does not determine the encoding, so any future multi-byte
+    /// support has to validate byte order per key family against a known-good source rather than
+    /// assume one. Nothing in the app needs those types today.
+    private func isSupported(_ ki: KeyInfo) -> Bool {
+        switch (keyString(ki.dataType), ki.dataSize) {
+        case ("flt ", 4), ("sp78", 2), ("ui8 ", 1), ("flag", 1):
+            return true
+        default:
+            return false
         }
-        let raw = UInt32(readOut.bytes.0)
-                | (UInt32(readOut.bytes.1) << 8)
-                | (UInt32(readOut.bytes.2) << 16)
-                | (UInt32(readOut.bytes.3) << 24)
-        return Double(Float(bitPattern: raw))
+    }
+
+    /// Turns a successful READ_BYTES reply into a Double in the key's native unit (Watts, RPM, °C,
+    /// a count — the key decides). Only layouts `isSupported` admits reach here.
+    private func decode(_ p: Param, as ki: KeyInfo) -> Double? {
+        var b = [UInt8](repeating: 0, count: 8)
+        withUnsafeBytes(of: p.bytes) { raw in
+            for i in 0..<min(b.count, raw.count) { b[i] = raw[i] }
+        }
+        switch keyString(ki.dataType) {
+        case "flt ":
+            let raw = UInt32(b[0]) | (UInt32(b[1]) << 8) | (UInt32(b[2]) << 16) | (UInt32(b[3]) << 24)
+            return Double(Float(bitPattern: raw))
+        case "sp78":
+            // Big-endian, signed, 8 fractional bits — value is raw / 256 (°C for the TC** keys).
+            return Double(Int16(bitPattern: (UInt16(b[0]) << 8) | UInt16(b[1]))) / 256.0
+        case "ui8 ", "flag":
+            return Double(b[0])
+        default:
+            return nil
+        }
     }
 
     /// Enumerates every SMC key by index (`#KEY` gives the count, then `SMC_CMD_READ_INDEX` maps an
@@ -155,16 +190,26 @@ final class SMC {
         return names
     }
 
-    /// Reads the actual RPM of every fan the SMC exposes. Fan keys are contiguous (F0Ac, F1Ac, …),
-    /// so it probes upward and stops at the first missing key — no separate `FNum` read needed, and
-    /// it works for any fan count. Returns [] on a fanless Mac or when SMC is unavailable. On Apple
-    /// Silicon each F<n>Ac is a `flt ` in RPM, which `readFloat` already handles.
-    func readFans() -> [Double] {
+    /// Every fan the SMC exposes, with the limits that give its speed meaning: actual RPM (F<n>Ac),
+    /// the fan's own floor and ceiling (F<n>Mn / F<n>Mx) and the speed the controller is currently
+    /// aiming for (F<n>Tg). All four are `flt `. Returns [] on a fanless Mac or when SMC is
+    /// unavailable; any individual limit the machine doesn't publish stays nil.
+    ///
+    /// `FNum` is the authoritative fan count and is only readable now that `ui8 ` decodes — it
+    /// replaces the old probe-until-a-key-is-missing loop, which had to guess an upper bound. The
+    /// probe remains as the fallback for a chip that doesn't publish FNum.
+    func readFans() -> [FanInfo] {
         guard isAvailable else { return [] }
-        var fans: [Double] = []
-        for n in 0..<10 {                                 // 10 is a generous ceiling; no Mac has this many
+        let declared = readFloat("FNum").map(Int.init)
+        let ceiling = declared.map { max(0, min($0, 64)) } ?? 10
+        var fans: [FanInfo] = []
+        for n in 0..<ceiling {
             guard let rpm = readFloat("F\(n)Ac") else { break }
-            fans.append(rpm)
+            fans.append(FanInfo(index: n,
+                                actual: rpm,
+                                minimum: readFloat("F\(n)Mn"),
+                                maximum: readFloat("F\(n)Mx"),
+                                target: readFloat("F\(n)Tg")))
         }
         return fans
     }
