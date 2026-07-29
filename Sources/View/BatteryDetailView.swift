@@ -29,6 +29,15 @@ private struct FooterHeightPreferenceKey: PreferenceKey {
     }
 }
 
+/// Height of the pinned header (the live fan rows). Measured and subtracted from the cap for the same
+/// reason as the footer: the scroll area gets what is left over, not the whole cap.
+private struct HeaderHeightPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 struct BatteryDetailView: View {
     @ObservedObject var reader: BatteryReader
     @ObservedObject var iosReader: IOSDeviceReader
@@ -90,26 +99,33 @@ struct BatteryDetailView: View {
     // cap so the scroll area never grows over it. Starts at 0 so the first pass isn't scrolled.
     @State private var footerHeight: CGFloat = 0
 
-    // The scroll area may fill up to the cap minus whatever the pinned footer needs. Measured, not
-    // estimated, so it tracks the footer's real height across control sizes / font settings.
-    private var maxScrollHeight: CGFloat { max(120, maxPanelHeight - footerHeight) }
+    // Measured height of the pinned header (the live fan rows), 0 on a fanless Mac where it renders
+    // nothing. Subtracted from the cap for the same reason as footerHeight.
+    @State private var headerHeight: CGFloat = 0
+
+    // The scroll area may fill up to the cap minus whatever the two pinned bands need. Measured, not
+    // estimated, so it tracks their real heights across control sizes / font settings / fan counts.
+    private var maxScrollHeight: CGFloat { max(120, maxPanelHeight - headerHeight - footerHeight) }
 
     var body: some View {
         // Render un-scrolled by default (identical to the plain auto-sizing VStack this used to
         // be) so the very first layout pass always has a well-defined size and the popover shows.
         // Only once we've measured the scrollable content taller than the room left by the footer
         // do we switch to a ScrollView with a concrete fixed height — never an ambiguous/ideal-only
-        // constraint, which is what made the window vanish before. The footer (menu-bar settings +
-        // Refresh/Quit) always sits OUTSIDE the ScrollView so it stays pinned and reachable.
+        // constraint, which is what made the window vanish before. Two bands sit OUTSIDE the ScrollView
+        // so they stay pinned: the live fan rows above it (see pinnedFans) and the footer (menu-bar
+        // settings + Refresh/Quit) below it, which stays reachable however tall the content gets.
         Group {
             if measuredContentHeight > maxScrollHeight {
                 VStack(spacing: 0) {
+                    pinnedFans
                     ScrollView { scrollableContent.background(OverlayScrollerConfigurator()) }
                         .frame(height: maxScrollHeight)
                     footer
                 }
             } else {
                 VStack(spacing: 0) {
+                    pinnedFans
                     scrollableContent
                     footer
                 }
@@ -132,21 +148,49 @@ struct BatteryDetailView: View {
         ))
     }
 
+    // 🌀 Fan speeds from the SMC (live, ~1 Hz), pinned ABOVE the scroll area rather than scrolling with
+    // it. The fans are a property of the Mac, not of its battery, so they have no reason to slide away
+    // when the battery/iPhone/Android sections below are scrolled — and being the one band that moves
+    // every second, they are the band worth keeping in view while reading the rest.
+    //
+    // Skipped entirely on fanless Macs (e.g. MacBook Air), where this contributes no rows, no divider
+    // and no padding, so the battery header is flush with the top edge exactly as it was before.
+    @ViewBuilder
+    private var pinnedFans: some View {
+        let fans = reader.info.fans
+        // The Group carries the measurement, not the inner VStack: on a fanless Mac the VStack does not
+        // exist, so a GeometryReader attached to it would never emit and headerHeight would keep a stale
+        // non-zero value if fans ever disappeared mid-session (an SMC read that starts failing). Measured
+        // out here, "no fans" reports 0 and the cap arithmetic gets the truth either way.
+        Group {
+            if !fans.isEmpty {
+                VStack(alignment: .leading, spacing: 12) {
+                    SectionCaption("🌀 Fans (live)")
+                    VStack(spacing: 8) {
+                        ForEach(fans) { fan in
+                            FanRow(fan: fan, showIndex: fans.count > 1)
+                        }
+                    }
+                    // Marks the pinned/scrolling boundary, mirroring the one the footer opens with.
+                    Divider()
+                }
+                .padding(.horizontal, 14)
+                .padding(.top, 14)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .background(
+            GeometryReader { proxy in
+                Color.clear.preference(key: HeaderHeightPreferenceKey.self, value: proxy.size.height)
+            }
+        )
+        .onPreferenceChange(HeaderHeightPreferenceKey.self) { headerHeight = $0 }
+    }
+
     @ViewBuilder
     private var scrollableContent: some View {
         let i = reader.info
         VStack(alignment: .leading, spacing: 12) {
-
-            // 🌀 Fan speeds from the SMC (live, ~1 Hz) — pinned above the battery readout.
-            // Skipped entirely on fanless Macs (e.g. MacBook Air), so the battery header stays first there.
-            if !i.fans.isEmpty {
-                SectionCaption("🌀 Fans (live)")
-                VStack(spacing: 8) {
-                    ForEach(i.fans) { fan in
-                        FanRow(fan: fan, showIndex: i.fans.count > 1)
-                    }
-                }
-            }
 
             // Header — the "🔋 Battery" title is centred on the line; the device name and the
             // show-more toggle are anchored to the trailing edge, overlaid on the same row (same
