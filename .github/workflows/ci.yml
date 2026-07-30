@@ -49,7 +49,9 @@ jobs:
         run: |
           set -o pipefail
           ./run_tests.sh | tee "$RUNNER_TEMP/tests.log"
-          grep -qE 'Test run with [1-9][0-9]* tests in [1-9][0-9]* suites passed' "$RUNNER_TEMP/tests.log"
+          # tests? / suites? — swift-testing pluralizes, so a one-test run reads "1 test in 1 suite passed".
+          # The count still must be non-zero; it just must not reject a small run over its grammar.
+          grep -qE 'Test run with [1-9][0-9]* tests? in [1-9][0-9]* suites? passed' "$RUNNER_TEMP/tests.log"
 
   build:
     name: Build the app
