@@ -35,9 +35,21 @@ enum SMCKeyName {
     ///
     /// The layout is CHECKED rather than assumed, because a name cannot say whether `Tp00…Tp07` is eight
     /// zones or eight renderings of one — that information is not in the SMC's key list. So the thinning
-    /// happens only on a family that actually has the shape above, and any other family is returned
-    /// whole. Keeping too many sensors averages a spread; keeping the wrong subset of an unfamiliar chip
-    /// silently discards most of the die, and only the first of those announces itself in a comparison.
+    /// happens only on a family that actually has the shape above, and anything else is returned whole.
+    /// Keeping too many sensors averages a spread; keeping the wrong subset of an unfamiliar chip silently
+    /// discards most of the die, and only the first of those announces itself in a comparison.
+    ///
+    /// The check is deliberately split across two levels, and that split is the point rather than a
+    /// refinement. WHETHER the renderings model applies is a question about the whole family, because one
+    /// zone holding three keys is equally consistent with three zones holding one each — a single zone
+    /// cannot answer it. WHICH keys to drop is a question about each zone on its own. Judging both
+    /// family-wide, as this first did, made one stray or one missing key disable the thinning for every
+    /// zone: on this M1 Pro's real thirty-key family, adding a decodable `Tp0d` returned all 31 keys
+    /// instead of 10, and losing `Tp02` returned 29 — in both cases averaging the three renderings the
+    /// function exists to separate, wrong by that ~9 °C. Neither is hypothetical:
+    /// `SMC.allKeyNames()` skips any index whose read fails rather than reporting a short list, and
+    /// `CPUReader.discoverTemperatureKeys` runs once at launch, so a single hiccup during that one
+    /// enumeration would have mis-read every temperature for the rest of the session.
     static func cpuThermalKeys(from all: [String]) -> [String]? {
         let apple = all.filter { $0.count == 4 && $0.hasPrefix("Tp") }
         guard !apple.isEmpty else { return nil }
@@ -51,16 +63,27 @@ enum SMCKeyName {
         }
         guard !decoded.isEmpty else { return nil }
         let byZone = Dictionary(grouping: decoded) { $0.zone }
+        func isRenderingTriple(_ keys: [(key: String, zone: Int, rendering: Int)]) -> Bool {
+            Set(keys.map { $0.rendering }) == Set([0, 1, 2])
+        }
 
-        // The shape test: a contiguous run of zones from 0, each publishing exactly renderings 0, 1 and
-        // 2. Anything else — a stride that isn't 4, a zone missing a rendering, a family that starts at
-        // an offset — is not the layout the selection below is derived from.
-        let hasRenderingShape = byZone.keys.sorted() == Array(0..<byZone.count)
-            && byZone.values.allSatisfy { Set($0.map { $0.rendering }) == Set([0, 1, 2]) }
-        guard hasRenderingShape else { return decoded.map { $0.key }.sorted() }
+        // Family level: accept the model only on a STRICT majority, so a lone three-key group can't
+        // establish it. `Tp00 Tp01 Tp02` alone is as likely to be three zones as one, and `Tp00…Tp06`
+        // splits into a group of four and a group of three — a stride that isn't 4, so the zone arithmetic
+        // itself is wrong there and nothing may be dropped. A real renderings family is overwhelmingly
+        // shaped this way (ten zones out of ten here), so a majority is a low bar to clear honestly.
+        let shaped = byZone.values.filter(isRenderingTriple).count
+        guard shaped * 2 > byZone.count else { return decoded.map { $0.key }.sorted() }
 
-        return byZone.keys.sorted().compactMap { zone in
-            byZone[zone]?.first { $0.rendering == 1 }?.key
+        // Zone level: thin the zones that fit, keep whole the ones that don't. An anomaly now costs its
+        // own zone and nothing else, which is the difference between one cell of the CORES grid reading a
+        // three-way average and all of them doing so.
+        return byZone.keys.sorted().flatMap { zone -> [String] in
+            guard let keys = byZone[zone] else { return [] }
+            if isRenderingTriple(keys), let one = keys.first(where: { $0.rendering == 1 }) {
+                return [one.key]
+            }
+            return keys.map { $0.key }.sorted()
         }
     }
 }

@@ -166,7 +166,65 @@ struct SMCKeyNameTests {
         // The shape is judged on the names that decode, not on every Tp-prefixed string present. An M1
         // Pro that also published something unreadable must still collapse to its ten zones, because the
         // alternative — falling back to all thirty — is the ~9 °C averaging error.
+        //
+        // Note this is the WEAK version of that guard: "Tp-!" is dropped by `index` before the shape is
+        // ever looked at, so a check that judged the family as one unit would pass it too. The two tests
+        // below are the ones that need the per-zone split, and they are where the ~9 °C actually hid.
         #expect(SMCKeyName.cpuThermalKeys(from: Self.m1ProTpKeys + ["Tp-!"]) == Self.expectedZoneKeys)
+    }
+
+    // MARK: one anomaly must cost one zone, not the whole die
+
+    @Test("a stray key that DOES decode costs only its own zone")
+    func aDecodableStrayKeyCostsOneZone() {
+        // The failure this file was written to prevent, reached from the one direction the junk-key test
+        // above cannot reach. "Tp0d" is index 39 — zone 9, rendering 3 — so unlike "Tp-!" it survives
+        // decoding and lands inside the family. Judged family-wide, that single key made zone 9 fail the
+        // renderings test and dropped the thinning for ALL ten zones: measured against the pre-fix code,
+        // 31 keys came back instead of 10, i.e. every CORES cell and the headline CPU temperature
+        // averaging three redundant renderings, ~9 °C out, for the whole session.
+        //
+        // It is not a hypothetical key. SMC.allKeyNames() skips any index whose read fails rather than
+        // reporting a short list, and CPUReader.discoverTemperatureKeys runs once at launch — so one
+        // hiccup in that single enumeration is enough, and nothing afterwards re-derives the list.
+        let out = SMCKeyName.cpuThermalKeys(from: Self.m1ProTpKeys + ["Tp0d"])
+        #expect(out == ["Tp01", "Tp05", "Tp09", "Tp0D", "Tp0H", "Tp0L", "Tp0P", "Tp0T", "Tp0X",
+                        "Tp0a", "Tp0b", "Tp0c", "Tp0d"])
+        // Nine zones still thinned to one key each; only zone 9 keeps all four of its own.
+        #expect(out?.count == 13)
+    }
+
+    @Test("a zone that lost a rendering costs only its own zone")
+    func aMissingRenderingCostsOneZone() {
+        // The same failure from the opposite direction: a key going MISSING rather than appearing. Zone 0
+        // is left with renderings 0 and 1, which is not the triple, so it keeps both — but zones 1 through
+        // 9 are untouched and must still collapse. Family-wide this returned 29 keys.
+        let out = SMCKeyName.cpuThermalKeys(from: Self.m1ProTpKeys.filter { $0 != "Tp02" })
+        #expect(out == ["Tp00", "Tp01", "Tp05", "Tp09", "Tp0D", "Tp0H", "Tp0L", "Tp0P", "Tp0T",
+                        "Tp0X", "Tp0b"])
+        #expect(out?.count == 11)
+    }
+
+    @Test("zones need not be numbered contiguously to be thinned")
+    func nonContiguousZonesAreStillThinned() {
+        // Zones 0, 1 and 3 with a hole where zone 2 would be — the shape a part with a disabled cluster
+        // could plausibly publish. All three present zones hold the full triple, so all three collapse.
+        // The previous whole-family test additionally demanded the zone numbers run 0..<count and
+        // returned all nine keys here, which is the averaging error for no benefit.
+        let gapped = ["Tp00", "Tp01", "Tp02", "Tp04", "Tp05", "Tp06", "Tp0C", "Tp0D", "Tp0E"]
+        #expect(SMCKeyName.cpuThermalKeys(from: gapped) == ["Tp01", "Tp05", "Tp0D"])
+    }
+
+    @Test("a family whose stride is not 4 is kept whole, however its groups fall")
+    func strideThatIsNotFourIsKeptWhole() {
+        // Tp00…Tp06 splits under `index / 4` into a group of four and a group of three. The group of three
+        // looks like a rendering triple all by itself, so a purely per-zone rule would thin it and throw
+        // away two of seven sensors. It must not: a stride that isn't 4 means the zone arithmetic itself
+        // is wrong for this family, and the strict majority is what refuses it — one shaped group out of
+        // two is not a majority. This is the case that keeps the fix from trading one silent loss for
+        // another.
+        let sevenInARow = ["Tp00", "Tp01", "Tp02", "Tp03", "Tp04", "Tp05", "Tp06"]
+        #expect(SMCKeyName.cpuThermalKeys(from: sevenInARow) == sevenInARow)
     }
 
     @Test("the fallback list also excludes keys of the wrong length")
