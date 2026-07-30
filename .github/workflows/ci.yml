@@ -1,7 +1,8 @@
 # CI — two checks, run in parallel on every push and pull request.
 #
-# The split matters because the unit tests cover Sources/Core only, which is a couple of hundred lines out
-# of ~7,800. Tests alone would let a broken reader or view sail through green, so the second job compiles,
+# The split matters because the unit tests cover Sources/Core only — a small fraction of the tree; README
+# and CLAUDE.md carry the one figure, so it isn't restated here to drift out of step with them a third
+# time. Tests alone would let a broken reader or view sail through green, so the second job compiles,
 # links and packages the WHOLE tree exactly the way a release does. Between them: the pure logic is
 # asserted, and everything else is at least guaranteed to build.
 #

@@ -57,9 +57,17 @@ directory, not a file list.
 
 ## Verifying a change
 
-`./run_tests.sh` covers 541 of the 8,139 lines under `Sources/`, so a green suite says something about the
-arithmetic and nothing about the other 94%. For anything touching a reader, a view or the app shell, also
-compile the whole tree the way CI's build job does:
+`./run_tests.sh` covers roughly one line in twelve — about 700 of the 8,300 under `Sources/` — so a green
+suite says something about the arithmetic and nothing about the remaining 92%. Deliberately approximate:
+the exact pair written here before ("541 of 8,139") was falsified two commits later by a new file in
+`Sources/Core`, and shipped that way. Recount rather than trust it:
+
+```bash
+find Sources/Core -name '*.swift' -exec cat {} + | wc -l   # and the same over Sources/
+```
+
+For anything touching a reader, a view or the app shell, also compile the whole tree the way CI's build
+job does:
 
 ```bash
 swiftc -parse-as-library -target arm64-apple-macos13 -typecheck $(find Sources -name '*.swift') -F Frameworks
