@@ -331,6 +331,45 @@ private final class IOSDeviceWorker: @unchecked Sendable {
         return RefreshResult(devices: results, toolsMissing: false, status: nil)
     }
 
+    /// A wall-clock deadline for one multi-attempt probe.
+    ///
+    /// Both retry loops below used to bound each CALL and nothing else, which is not a bound at all:
+    /// readBatteryRegistry's 3 attempts x 2 registry classes could sit for 3 x 2 x DeviceTool.toolTimeout
+    /// plus its sleeps — 24.6 s, or 36.6 s once DeviceTool escalates to SIGKILL on a child that ignores
+    /// SIGTERM — and listDevices' 5 attempts x 2 calls for 41.6 s. That matters beyond the wasted time:
+    /// publish() is the only writer of `devices` and refresh() bails while a read is in flight, so for the
+    /// whole of that the card is frozen on its last row AND the Refresh button is dead, because it calls
+    /// the same refresh(). DeviceTool's comment names the trigger — a tool "blocked in a usbmux syscall on
+    /// a locked device" — so this is the ordinary locked-phone path, not an exotic one.
+    ///
+    /// Retries keep their point: a probe whose calls fail fast (the common transient case) still gets all
+    /// its attempts well inside the budget. What is gone is the pathological tail.
+    private struct Budget {
+        private let end: DispatchTime
+        init(_ seconds: TimeInterval) { end = DispatchTime.now() + seconds }
+        /// Seconds left, never negative — DispatchTime's nanoseconds are unsigned, so the comparison has
+        /// to come first: `end - now` on an overrun budget would trap rather than go negative.
+        var remaining: TimeInterval {
+            let now = DispatchTime.now()
+            guard now < end else { return 0 }
+            return Double(end.uptimeNanoseconds - now.uptimeNanoseconds) / 1_000_000_000
+        }
+        /// What to pass a single call: its own timeout, or the rest of the budget if that is shorter.
+        var callTimeout: TimeInterval { min(DeviceTool.toolTimeout, remaining) }
+        /// Whether there is enough left to be worth another attempt. A call given a sliver of a second
+        /// would be killed before the device could answer, so spending the sliver buys nothing.
+        var allowsAnotherCall: Bool { remaining > 0.25 }
+    }
+
+    /// Total wall-clock budget for enumerating the bus. Generous next to the ~9 ms `idevice_id` normally
+    /// takes; it exists only to cap the case where usbmuxd itself is wedged.
+    private static let enumerateBudget: TimeInterval = 6
+
+    /// Total wall-clock budget for one device's registry read. Wide enough that both registry classes get
+    /// a full DeviceTool.toolTimeout on the first attempt — if neither answers in 4 s the device is not
+    /// answering — while capping the retry tail at one round rather than three.
+    private static let registryBudget: TimeInterval = 8
+
     private func transportArgs(_ network: Bool) -> [String] { network ? ["-n"] : [] }
 
     private func infoValue(_ path: String, udid: String, key: String, network: Bool) -> String? {
@@ -340,17 +379,19 @@ private final class IOSDeviceWorker: @unchecked Sendable {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    private func listOne(_ path: String, _ flag: String) -> Set<String> {
-        guard let data = DeviceTool.run(path, [flag]),
+    private func listOne(_ path: String, _ flag: String, timeout: TimeInterval) -> Set<String> {
+        guard let data = DeviceTool.run(path, [flag], timeout: timeout),
               let s = String(data: data, encoding: .utf8) else { return [] }
         return Set(s.split(whereSeparator: \.isNewline).map(String.init).filter { !$0.isEmpty })
     }
 
     private func listDevices(_ path: String) -> [(udid: String, network: Bool)] {
         let maxAttempts = sawDeviceLastCycle ? 5 : 1
+        let budget = Budget(Self.enumerateBudget)
         for attempt in 0..<maxAttempts {
-            let usb = listOne(path, "-l")
-            let net = listOne(path, "-n")
+            guard budget.allowsAnotherCall else { break }
+            let usb = listOne(path, "-l", timeout: budget.callTimeout)
+            let net = listOne(path, "-n", timeout: budget.callTimeout)
             if !usb.isEmpty || !net.isEmpty {
                 sawDeviceLastCycle = true
                 var out = usb.sorted().map { (udid: $0, network: false) }
@@ -375,9 +416,12 @@ private final class IOSDeviceWorker: @unchecked Sendable {
     }
 
     private func readBatteryRegistry(_ path: String, udid: String, network: Bool) -> [String: Any]? {
+        let budget = Budget(Self.registryBudget)
         for attempt in 0..<3 {
             for cls in ["AppleSmartBattery", "AppleARMPMUCharger"] {
-                if let raw = DeviceTool.run(path, transportArgs(network) + ["-u", udid, "ioregentry", cls]),
+                guard budget.allowsAnotherCall else { return nil }
+                if let raw = DeviceTool.run(path, transportArgs(network) + ["-u", udid, "ioregentry", cls],
+                                            timeout: budget.callTimeout),
                    let plist = try? PropertyListSerialization.propertyList(from: raw, options: [], format: nil) as? [String: Any],
                    let reg = plist["IORegistry"] as? [String: Any],
                    reg["AppleRawMaxCapacity"] != nil || reg["NominalChargeCapacity"] != nil

@@ -12,7 +12,11 @@ enum DeviceTool {
 
     /// Kill a tool that overruns this — unplugging a device mid-read can otherwise leave a
     /// libimobiledevice/adb process blocked indefinitely and wedge the calling reader.
-    private static let toolTimeout: TimeInterval = 4
+    ///
+    /// Internal rather than private because a caller that retries has to bound the WHOLE probe, not each
+    /// call: six calls that each stop politely at 4 s still add up to a wedge. Such a caller needs this
+    /// number to cap each attempt at whatever is left of its own budget — see IOSDeviceWorker.Budget.
+    static let toolTimeout: TimeInterval = 4
 
     /// First existing/executable path for `name` across `searchDirs`, or nil if not installed.
     static func path(_ name: String) -> String? {
