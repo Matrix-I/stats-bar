@@ -30,9 +30,18 @@ struct DevicePresenceCache<Device, ID: Hashable> {
     enum ReadKind: Equatable {
         /// Complete and trustworthy. Shown as read, and becomes this device's cached baseline.
         case good
-        /// Live but incomplete: a locked iPhone, or the cheap glyph-only pass. Shown with the cached
-        /// baseline's static figures grafted on, and deliberately NEVER made the baseline itself —
-        /// letting a partial read overwrite the baseline is how cached health gets lost.
+        /// Live but incomplete because the DEVICE refused part of the read — a locked iPhone, whose
+        /// diagnostics registry is unavailable while the lockdown battery domain still answers. Shown with
+        /// the cached baseline's static figures grafted on, and deliberately NEVER made the baseline
+        /// itself — letting a partial read overwrite the baseline is how cached health gets lost.
+        ///
+        /// "Refused" is the whole meaning, and it used to be two: a cheap glyph-only pass, where the
+        /// caller chose not to ask, arrived here as well. The two look identical to this type and are not
+        /// remotely alike in how stale the missing figures may be — a refusal lasts as long as the phone
+        /// stays locked, while a skipped read was current seconds ago. Conflating them is how a card ended
+        /// up either dropping rows once a second or, had the obvious fix landed, presenting borrowed
+        /// numbers as live. If a cheap read is ever reintroduced, give it its own kind and state what
+        /// bounds its age before grafting anything that moves.
         case partial
         /// The read failed outright: untrusted, handshake dropped, adb error.
         case failed
@@ -53,6 +62,12 @@ struct DevicePresenceCache<Device, ID: Hashable> {
 
     /// How long a device may be absent from enumeration before its cache entry is dropped and it
     /// disappears from the UI. Short, because vanishing off the bus is usually a real unplug.
+    ///
+    /// It must still be LONGER than the caller's polling interval, or it cannot fire at all: the previous
+    /// sighting is already older than the window by the time the next tick enumerates, so `seenWithin` is
+    /// false and the first blip drops the device — a safety net that reads like one and catches nothing.
+    /// A `var` rather than a `let` for exactly that reason: a caller whose cadence changes has to move this
+    /// with it. See DeviceReadCadence.graceGone, which derives it.
     var graceGone: TimeInterval
 
     /// How long a device that is still enumerated but unreadable may ride out on its last good read.

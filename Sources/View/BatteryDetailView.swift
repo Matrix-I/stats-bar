@@ -136,11 +136,12 @@ struct BatteryDetailView: View {
             onChange: { open in
                 reader.setPanelOpen(open)
                 // Tell the phone readers this popover (their only consumer) is open, so they poll at
-                // ~1 Hz while it's visible and drop to a slow keep-warm when it's closed and the phone
-                // menu-bar glyph is off. We deliberately do NOT force a read on open here: a slow
-                // libimobiledevice/adb read landing at an unpredictable moment could snap a section's
-                // expand animation, so the cache is shown immediately and the next ~1 Hz tick refreshes.
-                // The Refresh button still forces a read.
+                // ~1 Hz while it's visible and drop to a slower cadence when it's closed and the phone
+                // menu-bar glyph is off. The iPhone reader also starts a read on the opening edge; the
+                // note that used to sit here said it deliberately did not, to keep a slow read from
+                // landing mid-animation, but what that bought was a popover that opened on a row missing
+                // Temperature / Voltage / Charging with and grew ~1.1 s later. See
+                // IOSDeviceReader.setPanelOpen.
                 iosReader.setPanelOpen(open)
                 androidReader.setPanelOpen(open)
             },
@@ -454,8 +455,9 @@ struct BatteryDetailView: View {
                     .font(.caption2).foregroundStyle(.secondary)
             }
         }
-        // No .onAppear refresh: the background timer keeps `iosReader.devices` warm, so this just shows
-        // the cache. Avoids a slow read landing mid-animation (see the WindowVisibilityReporter note).
+        // No .onAppear refresh: MenuBarExtra(.window) builds this view once, so onAppear would not refire
+        // per open anyway. The read on open is driven off the window's visibility instead — see the
+        // WindowVisibilityReporter note above — and the warm cache renders the same row shape meanwhile.
     }
 
     // 🤖 Android — inline for the same reason as iPhoneSection (was an AndroidDevicesSection child that

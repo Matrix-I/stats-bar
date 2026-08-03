@@ -1,7 +1,11 @@
-// IOSDeviceReader.swift — reads iPhone/iPad battery health over USB by shelling out to
-// libimobiledevice (idevice_id / ideviceinfo / idevicediagnostics), same approach as
-// cocobat.py --ios. Command-line plumbing (locating tools, running with a timeout) lives in
-// DeviceTool.
+// IOSDeviceReader.swift — reads iPhone/iPad battery health by shelling out to libimobiledevice
+// (idevice_id / ideviceinfo / idevicediagnostics), same approach as cocobat.py --ios. Command-line
+// plumbing (locating tools, running with a timeout) lives in DeviceTool.
+//
+// Over USB *or* over Wi-Fi sync: every probe below takes a transport flag (see transportArgs), and a
+// device reached only over the network is surfaced rather than dropped. Worth stating because the header
+// claimed USB-only for a long time while the whole `-n` path sat underneath it, and a Wi-Fi read is the
+// slower, more failure-prone one — which is the case most of the timing decisions here are sized for.
 
 import Foundation
 import Combine
@@ -12,31 +16,39 @@ final class IOSDeviceReader: ObservableObject {
     @Published var toolsMissing = false
     @Published var statusMessage: String?
 
-    /// Only accessed/mutated on the main thread — refresh() is always called from main (button, onAppear, timer).
+    /// Only accessed/mutated on the main thread — refresh() is always called from main (button, popover
+    /// visibility, timer).
     private var isBusy = false
     private lazy var poll = PollingTimer { [weak self] in self?.tick() }
 
-    /// Popover visibility, driven by BatteryDetailView (the only view that shows iPhone data). It and
-    /// the iPhone menu-bar glyph are what hold the reader at its full ~1 Hz cadence. A connected phone
-    /// nobody is watching still refreshes — to feed the hot-battery alerter — but only every
-    /// `alerterInterval`, and an idle reader drops to `keepWarmInterval`. See tick(). Main-thread only.
+    /// Popover visibility, driven by BatteryDetailView (the only view that shows iPhone data). Together
+    /// with the iPhone menu-bar glyph it decides how often we look — see `watcher`. Main-thread only.
     private var panelOpen = false
-    /// Cadence gates use the monotonic clock (DispatchTime / mach uptime), never Date(), so a
-    /// wall-clock / NTP step backwards can't wedge a cadence into never firing. nil = never refreshed
-    /// (so the gate reads as elapsed). Main-thread only.
-    private var lastRefreshAt: DispatchTime?
-    /// When the last FULL (heavy diagnostics-relay) read ran. While the glyph is shown but the popover
-    /// is closed, most ticks do the cheap light read (charge % only) and only every `alerterInterval`
-    /// falls back to a full read — to refresh health and feed the alerter. Separate from lastRefreshAt,
-    /// which gates the off-screen cadence. Monotonic, main-thread only.
-    private var lastFullRefreshAt: DispatchTime?
-    /// Refresh cadence when a phone is connected but off-screen (popover closed, glyph off): frequent
-    /// enough for the thermal nudge (battery temperature drifts slowly, and iOS pauses charging when
-    /// hot on its own), but not the every-second libimobiledevice fork storm that full 1 Hz would be.
-    private static let alerterInterval: TimeInterval = 5
-    /// Refresh cadence when nothing is connected and nobody is watching — just often enough to notice
-    /// a plug-in promptly.
-    private static let keepWarmInterval: TimeInterval = 10
+
+    /// Which interval applies to which audience, and how long a device may be missing before it is
+    /// dropped. Lives in Sources/Core (DeviceReadCadence) with the numbers as its defaults, so the reader
+    /// and its tests read one source instead of two copies that drift. Constructed with no arguments on
+    /// purpose — see that type's header.
+    private static let cadence = DeviceReadCadence()
+
+    /// Who can see the readings right now. Both the read cadence and the presence cache's ride-out window
+    /// are derived from this.
+    private var watcher: DeviceReadCadence.Watcher {
+        if panelOpen { return .popover }
+        return UserDefaults.standard.bool(forKey: "showIPhoneMenuBar") ? .glyph : .nobody
+    }
+
+    /// Point the timer at the interval the current audience deserves. `PollingTimer.schedule` no-ops when
+    /// the interval is unchanged, so this is safe to call on every publish and every visibility change.
+    ///
+    /// The timer carrying the cadence — rather than a fixed 1 Hz timer whose ticks get gated on elapsed
+    /// time — is the whole design, and it is not a matter of taste. With two rates, a read starting a few
+    /// milliseconds after a tick leaves the next tick fractionally short of the interval, so it skips: a
+    /// 2 s interval measurably read every 3 s, and the popover's 1 s interval every 1-2 s. One rate cannot
+    /// beat against itself. BatteryReader.applyCadence has done it this way all along.
+    private func applyCadence() {
+        poll.schedule(every: Self.cadence.interval(watcher, deviceAttached: !devices.isEmpty))
+    }
 
     /// Runs the enumeration off the main thread and owns the caches that outlive a single refresh
     /// (device identities, whether the last cycle saw anything). See the type for why it is a
@@ -53,80 +65,55 @@ final class IOSDeviceReader: ObservableObject {
     /// ObservableObject that shells out to libimobiledevice. Only touched on the main thread, inside
     /// publish, so its per-device state stays single-threaded.
     ///
-    /// 3 s to disappear once it drops out of USB enumeration entirely (usually a real unplug); the
-    /// default 30 s to ride out a device that is still enumerated but unreadable — locked, or another
-    /// app holding the lockdown session, which tends to recover on its own.
-    private var presence = DevicePresenceCache<IOSDeviceInfo, String>(graceGone: 3)
+    /// `graceGone` — how long a device may be missing before it disappears — is re-derived on every
+    /// publish from the interval actually in force, so the value passed here only covers the very first
+    /// read. It used to be a flat 3 s, which could never fire on the two cadences that tick every 5 s and
+    /// 10 s: the previous sighting was already older than the window by the time the next tick
+    /// enumerated, so one blip dropped the device outright. See DeviceReadCadence.graceGone.
+    ///
+    /// `graceUnreadable` keeps its default 30 s: a device that is still enumerated but unreadable —
+    /// locked, or another app holding the lockdown session — tends to recover on its own.
+    private var presence = DevicePresenceCache<IOSDeviceInfo, String>(
+        graceGone: IOSDeviceReader.cadence.graceGone(.popover, deviceAttached: false)
+    )
 
     init() {
         refresh()
         // MenuBarExtra(.window) builds the view once and just shows/hides it afterward — .onAppear
         // doesn't refire on every menu open, so a dedicated timer is needed to pick up plug/unplug events.
-        // Poll every second like the Mac reader. Each tick shells out to libimobiledevice (a few
-        // subprocesses + USB round-trips), but refresh()'s isBusy guard drops any tick that lands
-        // while the previous read is still running, so a slow cycle just lowers the effective rate.
-        poll.schedule(every: 1)
+        applyCadence()
     }
 
-    /// Called by BatteryDetailView's visibility reporter. We deliberately do NOT force a read on open
-    /// (a slow libimobiledevice read landing mid-animation would snap it — see the note in
-    /// BatteryDetailView); the next fast tick, within ~1 s, refreshes, and the warm cache shows meanwhile.
-    func setPanelOpen(_ open: Bool) { panelOpen = open }
-
-    /// The 1 Hz timer's handler. Picks the effective cadence from who's actually looking:
-    ///  • popover open, or the iPhone menu-bar glyph on → full 1 Hz (the data is on screen);
-    ///  • otherwise a connected phone → every `alerterInterval`, enough to keep TemperatureAlerter
-    ///    (the hot-battery nudge, driven by publish()) responsive without forking libimobiledevice
-    ///    every second for something off-screen;
-    ///  • nothing connected and nobody watching → `keepWarmInterval`, just to catch a plug-in.
-    /// Dropping a connected-but-unwatched phone from 1 Hz to `alerterInterval` is the big idle-cost win
-    /// (see doRefresh — each refresh forks several libimobiledevice tools).
-    private func tick() {
-        let watched = panelOpen || UserDefaults.standard.bool(forKey: "showIPhoneMenuBar")
-        // Off screen → a relaxed cadence, always a full read (there's no glyph to keep live cheaply):
-        // a connected phone every alerterInterval (to feed the hot-battery alerter), nothing connected
-        // every keepWarmInterval (just to notice a plug-in).
-        if !watched {
-            let minInterval = devices.isEmpty ? Self.keepWarmInterval : Self.alerterInterval
-            guard elapsed(since: lastRefreshAt, atLeast: minInterval) else { return }
-            let now = DispatchTime.now()
-            lastRefreshAt = now
-            lastFullRefreshAt = now
-            refresh(full: true)
-            return
-        }
-        // On screen, so refresh every tick. The popover shows full health, so it always does the heavy
-        // full read; the menu-bar glyph alone needs only charge % + charging, so between full reads it
-        // does the light battery-domain read (see doRefresh), falling back to a full read every
-        // alerterInterval to refresh health and feed the alerter. The full-read gate uses the monotonic
-        // clock (see elapsed), so an NTP/clock step can't wedge it — and the light read runs every tick
-        // regardless, so the visible glyph never stalls.
-        let now = DispatchTime.now()
-        lastRefreshAt = now
-        let full = panelOpen || elapsed(since: lastFullRefreshAt, atLeast: Self.alerterInterval)
-        if full { lastFullRefreshAt = now }
-        refresh(full: full)
+    /// Called by BatteryDetailView's visibility reporter. Forces a read on the opening edge, which is what
+    /// BatteryReader.setPanelOpen has always done — the iPhone reader was the odd one out, and that
+    /// asymmetry is why the Mac card was complete the moment the popover appeared and the iPhone card was
+    /// not.
+    ///
+    /// This used to be a bare assignment, on the argument that a slow libimobiledevice read landing
+    /// mid-animation would snap the popover. That argument died with the light read: every read now
+    /// produces the same set of fields, so one landing late changes numbers in place instead of adding
+    /// four rows and growing the card mid-flight.
+    func setPanelOpen(_ open: Bool) {
+        guard open != panelOpen else { return }
+        panelOpen = open
+        applyCadence()
+        if open { refresh() }
     }
 
-    /// Monotonic elapsed-time gate: true when `mark` is nil (never yet) or at least `seconds` of mach
-    /// uptime have passed since it. DispatchTime never runs backwards, so a wall-clock / NTP step can't
-    /// stall a cadence the way Date() would.
-    private func elapsed(since mark: DispatchTime?, atLeast seconds: TimeInterval) -> Bool {
-        guard let mark else { return true }
-        return Double(DispatchTime.now().uptimeNanoseconds - mark.uptimeNanoseconds) / 1_000_000_000 >= seconds
-    }
+    /// The timer's handler. The timer already runs at the right interval (see applyCadence), so every tick
+    /// is a read; `refresh`'s isBusy guard is what keeps a slow cycle from piling up.
+    private func tick() { refresh() }
 
-    /// `full: false` does the cheap glyph-only pass (enumerate + a light battery-domain charge read),
-    /// used between full reads while only the menu-bar glyph is shown. The default is a full read, so
-    /// init, the Refresh button, and popover-open all get the complete health readout.
-    func refresh(full: Bool = true) {
+    /// One read: enumerate, then identity and the battery registry for every device found. There is no
+    /// cheap variant any more — see doRefresh for why the glyph-only pass was removed.
+    func refresh() {
         guard !isBusy else { return }
         isBusy = true
         // Inherits the main actor, so `publish` lands back here with no extra hop; the await only
         // suspends this task while the worker queue does the blocking probes.
         let worker = self.worker
         Task { [weak self] in
-            let res = await worker.refresh(full: full)
+            let res = await worker.refresh()
             self?.publish(devices: res.devices, toolsMissing: res.toolsMissing, status: res.status)
         }
     }
@@ -138,6 +125,11 @@ final class IOSDeviceReader: ObservableObject {
         // the final list (including the empty cases, which clear its per-device state).
         defer { self.alerter.check(self.devices) }
 
+        // Same reason, for the cadence: whether anything is attached is one of its inputs, so it has to be
+        // re-read once this publish has settled the list. A phone appearing tightens the interval from
+        // idle to off-screen; the last one leaving relaxes it again.
+        defer { self.applyCadence() }
+
         if toolsMissing {
             self.toolsMissing = true
             self.devices = []
@@ -146,20 +138,27 @@ final class IOSDeviceReader: ObservableObject {
         }
         self.toolsMissing = false
 
-        // Each fresh read is one of four kinds, which collapse to three for the cache:
-        //  • full read (unlocked)      → .good: shown as-is, becomes the new cached baseline;
-        //  • light read (isLightRead)  → .partial: glyph-only pass, live charge %, no health read;
-        //  • locked read (isLocked)    → .partial too — live charge only, so the last-known health is
-        //                                grafted from cache and stays on screen indefinitely (health
-        //                                barely changes; timestamped in the UI). The two differ only in
-        //                                whether the row shows a lock badge, never a hard error;
+        // The ride-out window has to track how often we actually look, so it is set here rather than once
+        // at init: a window shorter than the polling interval can never fire, because the previous
+        // sighting is already older than it by the time the next tick enumerates. `deviceAttached` reads
+        // the list as it stands BEFORE this publish rewrites it — that is the cadence the sighting was
+        // recorded under, which is the interval the window has to cover. See DeviceReadCadence.graceGone.
+        presence.graceGone = Self.cadence.graceGone(watcher, deviceAttached: !self.devices.isEmpty)
+
+        // Each fresh read is one of three kinds:
+        //  • unlocked read (no error)    → .good: shown as-is, becomes the new cached baseline;
+        //  • locked read (isLocked)      → .partial: the diagnostics registry is refused at the lock
+        //                                  screen, but the lockdown battery domain still answers, so
+        //                                  charge stays live and the last-known health is grafted from
+        //                                  cache and stays on screen indefinitely (health barely changes;
+        //                                  timestamped in the UI). Never a hard error;
         //  • hard failure (errorMessage) → .failed: untrusted / handshake dropped, so ride out on
-        //                                *this* device's own cached data, then surface the error.
+        //                                  *this* device's own cached data, then surface the error.
         let resolved = presence.resolve(
             fresh, now: Date(), id: \.id,
             kind: { dev in
-                if dev.errorMessage == nil, !dev.isLocked, !dev.isLightRead { return .good }
-                if dev.isLocked || dev.isLightRead { return .partial }
+                if dev.errorMessage == nil, !dev.isLocked { return .good }
+                if dev.isLocked { return .partial }
                 return .failed
             },
             capturedAt: \.capturedAt
@@ -179,9 +178,11 @@ final class IOSDeviceReader: ObservableObject {
             case .fresh(let dev):
                 return dev
             case .grafted(let dev, let prev):
-                // Graft the static health figures; leave currentCapacity/amperage/temp/voltage unset so
-                // charge stays live (a locked row's lockedChargePercent, a light read's stateOfCharge)
-                // and no stale dynamic values are shown.
+                // A locked device. Graft the static health figures; leave currentCapacity/amperage/temp/
+                // voltage unset so charge stays live (lockedChargePercent) and no stale dynamic values
+                // are shown. The staleness here is genuinely unbounded — the registry stays refused for as
+                // long as the phone stays locked — which is why the card labels this row rather than
+                // presenting it as a live reading.
                 var m = dev
                 m.maxCapacity = prev.maxCapacity
                 m.nominalChargeCapacity = prev.nominalChargeCapacity
@@ -223,13 +224,29 @@ private final class IOSDeviceWorker: @unchecked Sendable {
 
     /// Runs one enumeration on the worker queue. The caller's task suspends — it does not block — so
     /// the main actor stays responsive while the probes run.
-    func refresh(full: Bool) async -> RefreshResult {
+    func refresh() async -> RefreshResult {
         await withCheckedContinuation { continuation in
-            queue.async { continuation.resume(returning: self.doRefresh(full: full)) }
+            queue.async { continuation.resume(returning: self.doRefresh()) }
         }
     }
 
-    private func doRefresh(full: Bool) -> RefreshResult {
+    /// One read shape, deliberately.
+    ///
+    /// There used to be a second, cheap pass here — enumerate plus a lockdown battery-domain charge read —
+    /// taken between full reads while only the menu-bar glyph was shown. It cost the popover its
+    /// correctness: the battery domain carries seven keys and none of them is Temperature, Voltage or
+    /// Amperage, so a row published by the cheap pass had those fields nil and the card rendered four
+    /// fewer rows. Opening the popover therefore always landed on the short shape first and grew ~1.1 s
+    /// later, once the next tick's full read published. Grafting the missing values from cache was the
+    /// obvious alternative and the wrong one: publish() is the only writer of `devices` and refresh()
+    /// bails while a read is in flight, so a long read freezes the last published row — harmless while
+    /// those fields are nil, actively misleading once they are filled with borrowed numbers.
+    ///
+    /// What paid for the cheap pass was a 1 Hz cadence that iOS cannot honour anyway: it refreshes the
+    /// AppleSmartBattery snapshot every 7-20 seconds (measured), so most of those reads re-fetched an
+    /// identical snapshot. Reading fully at DeviceReadCadence's glyph interval instead costs fewer
+    /// subprocesses than the split did and leaves one row shape for every audience.
+    private func doRefresh() -> RefreshResult {
         guard let ideviceIdPath = DeviceTool.path("idevice_id"),
               let ideviceInfoPath = DeviceTool.path("ideviceinfo"),
               let diagnosticsPath = DeviceTool.path("idevicediagnostics") else {
@@ -249,20 +266,6 @@ private final class IOSDeviceWorker: @unchecked Sendable {
         for (udid, network) in devicesList {
             var dev = IOSDeviceInfo(id: udid)
             dev.isNetwork = network
-
-            if !full, let cached = infoCache[udid],
-               let batt = readBatteryDomain(ideviceInfoPath, udid: udid, network: network) {
-                dev.name = cached.name
-                dev.model = cached.model
-                dev.iosVersion = cached.iosVersion
-                dev.stateOfCharge = batt.pct
-                dev.isCharging = batt.isCharging
-                dev.externalConnected = batt.external
-                dev.fullyCharged = batt.full
-                dev.isLightRead = true
-                results.append(dev)
-                continue
-            }
 
             let trusted: Bool
             if let cached = infoCache[udid] {
