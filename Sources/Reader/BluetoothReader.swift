@@ -1,13 +1,25 @@
 // BluetoothReader.swift — the ObservableObject behind the Bluetooth menu-bar item. It publishes a
-// live BluetoothInfo from two sources, merged by device:
+// live BluetoothInfo from three sources, merged by device:
 //
 //   • `system_profiler SPBluetoothDataType -json` — the device list (names, types, connected state)
-//     plus battery for the devices macOS caches it for: classic accessories (e.g. headsets) and some
-//     BLE keyboards. This is the same source System Settings ▸ Bluetooth reads.
-//   • CoreBluetooth GATT (see BluetoothGATT) — battery for BLE accessories that system_profiler
-//     omits, notably Logitech mice. Those publish their level only over the GATT Battery Service, so
-//     this is the ONLY route that gets e.g. the MX Anywhere 3's percentage. It fills any main-battery
-//     value system_profiler left blank, matched by device name.
+//     plus battery for the devices macOS caches it for: some BLE keyboards. This is the same source
+//     System Settings ▸ Bluetooth reads.
+//   • IOKit accessory power sources (see AccessoryPowerSource) — the widest of the three, and the
+//     only one that can see a Bluetooth CLASSIC device at all. Synchronous and ~0.09 ms.
+//   • CoreBluetooth GATT (see BluetoothGATT) — battery for BLE accessories, notably Logitech mice.
+//     Kept because it has been proved on hardware and the accessory channel has not yet been proved
+//     to cover every shape (earbuds in particular). It fills whatever the first two left blank.
+//
+// The three overlap but none subsumes the others in what has been measured, which is the whole
+// reason for merging rather than picking one: on the author's machine system_profiler covers only
+// the keyboard, GATT only the mouse, and the accessory channel all three — the headset ONLY there.
+// A headset showing "—" for four releases is what this arrangement was written to fix, and it was a
+// missing source rather than a broken parse.
+//
+// Fields are filled INDIVIDUALLY rather than a whole device at a time. The previous overlay rebuilt
+// the struct from the source it was applying, so a device that reported left/right/case but no main
+// level would have had all three replaced by one merged main — the levels were dropped by the code
+// that was meant to be adding one.
 //
 // system_profiler is comparatively slow (~0.3–1 s) and forks a helper, so it runs on a utility
 // queue, cached, and only while the popover is open (plus one read at startup so the first open
@@ -83,19 +95,40 @@ final class BluetoothReader: ObservableObject {
     /// the main thread when a GATT battery value changes.
     private func republish() { info = merged(baseInfo) }
 
-    /// A copy of `base` with each device's main battery filled from the GATT source (by name) when
-    /// system_profiler didn't report one. system_profiler's own value always wins when present.
+    /// A copy of `base` with every battery field system_profiler left blank filled from the other two
+    /// sources, in decreasing order of authority. Nothing already present is overwritten, so a value
+    /// that came from macOS's own device record always wins.
+    ///
+    /// The accessory read happens here rather than alongside system_profiler on the background queue
+    /// because it costs 0.09 ms and this runs on every republish — reading it fresh is cheaper than
+    /// the bookkeeping to cache it, and it means a GATT-triggered republish can't pair a new GATT
+    /// level with a stale accessory list.
     private func merged(_ base: BluetoothInfo) -> BluetoothInfo {
-        guard !gatt.levelsByName.isEmpty else { return base }
         var out = base
-        out.connected = base.connected.map { device in
-            guard device.batteryMain == nil, let pct = gatt.levelsByName[device.name] else { return device }
-            return BluetoothDeviceInfo(
-                name: device.name, address: device.address, minorType: device.minorType,
-                batteryMain: pct,
-                batteryLeft: device.batteryLeft, batteryRight: device.batteryRight, batteryCase: device.batteryCase
-            )
+
+        let accessories = AccessoryPowerSource.read()
+        let levels = AccessoryBatteryJoin.levels(
+            devices: base.connected.map {
+                DeviceIdentity(name: $0.name, vendorID: $0.vendorID, productID: $0.productID)
+            },
+            accessories: accessories
+        )
+
+        for i in out.connected.indices {
+            let accessory = levels[i]
+            if out.connected[i].batteryMain == nil { out.connected[i].batteryMain = accessory.main }
+            if out.connected[i].batteryLeft == nil { out.connected[i].batteryLeft = accessory.left }
+            if out.connected[i].batteryRight == nil { out.connected[i].batteryRight = accessory.right }
+            if out.connected[i].batteryCase == nil { out.connected[i].batteryCase = accessory.caseLevel }
+
+            // GATT reports one level per peripheral and has only ever been keyed by name; it is the
+            // last resort precisely because that key is weaker than the join above.
+            if out.connected[i].batteryMain == nil,
+               let pct = gatt.levelsByName[out.connected[i].name] {
+                out.connected[i].batteryMain = pct
+            }
         }
+
         return out
     }
 
@@ -130,6 +163,8 @@ final class BluetoothReader: ObservableObject {
                     name: name.isEmpty ? "Unknown" : name,
                     address: (props["device_address"] as? String) ?? name,
                     minorType: props["device_minorType"] as? String,
+                    vendorID: hexID(props["device_vendorID"]),
+                    productID: hexID(props["device_productID"]),
                     batteryMain: percent(props["device_batteryLevelMain"]),
                     batteryLeft: percent(props["device_batteryLevelLeft"]),
                     batteryRight: percent(props["device_batteryLevelRight"]),
@@ -145,6 +180,17 @@ final class BluetoothReader: ObservableObject {
     /// whatever it hands us (string or number), clamped to 0…100; nil when there's no usable value.
     /// Percentages are never negative, so we only accept leading digits (a "-" mid-string, or any
     /// non-numeric value like "Not Charging", yields nil rather than a bogus number).
+    /// system_profiler reports the USB-style IDs as hex strings — "0x054C", and "0x004C (Apple)" on
+    /// the entries that name the vendor. The accessory power sources report the same IDs as plain
+    /// decimal numbers, so one side has to be converted before they can be compared. nil for a device
+    /// that reports no ID, which is common enough that the join must not depend on it.
+    nonisolated private static func hexID(_ any: Any?) -> Int? {
+        guard let raw = any as? String else { return any as? Int }
+        let token = raw.trimmingCharacters(in: .whitespaces).prefix { !$0.isWhitespace }
+        guard token.lowercased().hasPrefix("0x") else { return Int(token) }
+        return Int(token.dropFirst(2), radix: 16)
+    }
+
     nonisolated private static func percent(_ any: Any?) -> Int? {
         if let n = any as? Int { return min(100, max(0, n)) }
         guard let s = any as? String else { return nil }

@@ -7,6 +7,13 @@
 // classic Bluetooth). Connecting to the peripheral and reading 0x2A19 is the only route that
 // returns a real value (verified: MX Anywhere 3 → 95%). This is the mechanism Stats.app uses.
 //
+// That "they only work for classic Bluetooth" was written here as the reason to stop looking, and it
+// was the lead: a Bluetooth CLASSIC headset can be read, just not from either source this file knew
+// about. AccessoryPowerSource now covers those, and covers these too — it reports the same 90% for
+// the MX Anywhere in 0.09 ms with no connection at all. This file is kept because that has been
+// measured on three devices and not on earbuds, and CLAUDE.md asks for behaviour to be proved
+// preserved rather than assumed; a GATT-only accessory would go dark the day it is deleted on faith.
+//
 // It keeps a CBCentralManager alive for the app's lifetime, connects to the already-system-connected
 // peripherals that expose the Battery Service, reads the level, subscribes for live updates, and
 // re-reads on demand. Requires NSBluetoothAlwaysUsageDescription (see build_app.sh) and the user

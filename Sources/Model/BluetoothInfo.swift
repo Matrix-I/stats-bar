@@ -1,23 +1,34 @@
 // BluetoothInfo.swift — live Bluetooth model: the controller's power state plus the list of
 // currently connected devices, each with its display name, minor type (Mouse/Keyboard/Headset…)
-// and whatever battery levels macOS exposes for it. Populated by BluetoothReader from
+// and whatever battery levels macOS exposes for it. The device list comes from
 // `system_profiler SPBluetoothDataType -json`, the same source the Bluetooth pane in System
-// Settings and Stats.app read.
+// Settings and Stats.app read; the battery levels are merged from three sources by BluetoothReader,
+// because no single one of them covers every device.
 
 import Foundation
 
 /// One connected Bluetooth device. Battery is optional and can arrive in several shapes: a single
 /// `main` level for mice/keyboards/headsets, or the `left`/`right`/`case` triplet for AirPods-style
-/// earbuds. Every field is nil when the device doesn't report it (many mice never publish a level).
+/// earbuds. Every field is nil when no source reported it.
 struct BluetoothDeviceInfo: Identifiable {
     let name: String
     let address: String       // BD_ADDR, e.g. "E0:57:98:2A:4C:0C" — stable, so it's the identity
     let minorType: String?    // "Mouse", "Keyboard", "Headset", "Speaker", … (device_minorType)
 
-    let batteryMain: Int?
-    let batteryLeft: Int?
-    let batteryRight: Int?
-    let batteryCase: Int?
+    /// USB-style IDs when system_profiler reports them (`0x054C` → 1356). Not every device carries
+    /// them — a keyboard on the author's machine reports neither — but where both sides have them
+    /// they identify a device far better than its name, which is what the accessory-battery join
+    /// uses them for. See AccessoryBatteryJoin.
+    let vendorID: Int?
+    let productID: Int?
+
+    // `var` rather than `let`: BluetoothReader fills the gaps left by one source from the next, and
+    // rebuilding the whole struct per source is how the previous overlay silently dropped the
+    // left/right/case levels it wasn't looking at.
+    var batteryMain: Int?
+    var batteryLeft: Int?
+    var batteryRight: Int?
+    var batteryCase: Int?
 
     var id: String { address }
 
