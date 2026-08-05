@@ -9,7 +9,8 @@ import Foundation
 
 /// One connected Bluetooth device. Battery is optional and can arrive in several shapes: a single
 /// `main` level for mice/keyboards/headsets, or the `left`/`right`/`case` triplet for AirPods-style
-/// earbuds. Every field is nil when no source reported it.
+/// earbuds. Every field is nil when NO source reported it — which is not the same as "not read yet";
+/// see `BluetoothInfo.batterySourcesSettled` for the distinction the row has to draw.
 struct BluetoothDeviceInfo: Identifiable {
     let name: String
     let address: String       // BD_ADDR, e.g. "E0:57:98:2A:4C:0C" — stable, so it's the identity
@@ -76,6 +77,14 @@ struct BluetoothInfo {
     /// "Reading…" placeholder instead of asserting "Bluetooth is off." from the default (unread)
     /// state — the default `poweredOn == false` is indistinguishable from a genuine "off" reading.
     var hasLoaded = false
+    /// False until every battery source has had its say. The same argument as `hasLoaded`, one level
+    /// down: a device with no percentage is either one that reports none or one whose reading has
+    /// not arrived yet, and those look identical in the model. Two of the three sources are
+    /// synchronous, but GATT is a connect → discover → read round trip, so a BLE device legitimately
+    /// has no level for the first moment of a popover — and a mouse that went to sleep and came back
+    /// lands there in ordinary use. Without this the row would show, for a live device that is about
+    /// to report 90%, exactly the dash it shows for one that will never report at all.
+    var batterySourcesSettled = false
     /// The controller's power state — false when Bluetooth is turned off (or no controller exists).
     var poweredOn = false
     /// Devices currently connected, in the order system_profiler lists them.

@@ -129,6 +129,7 @@ final class BluetoothReader: ObservableObject {
             }
         }
 
+        out.batterySourcesSettled = base.hasLoaded && gatt.settled
         return out
     }
 

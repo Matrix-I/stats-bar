@@ -50,7 +50,7 @@ struct BluetoothDetailView: View {
         } else {
             VStack(spacing: 10) {
                 ForEach(info.connected) { device in
-                    BluetoothDeviceRow(device: device)
+                    BluetoothDeviceRow(device: device, sourcesSettled: info.batterySourcesSettled)
                 }
             }
         }
@@ -66,10 +66,13 @@ struct BluetoothDetailView: View {
 }
 
 /// One device row: a type glyph, the device name (with an optional L/R/Case caption for earbuds),
-/// and the battery percentage right-aligned — white normally, red when the battery is low, and a
-/// dimmed "—" when the device reports no level at all.
+/// and the battery percentage right-aligned — white normally, red when the battery is low, a dimmed
+/// "…" while a source is still answering, and a dimmed "—" once they all have and none had a level.
 private struct BluetoothDeviceRow: View {
     let device: BluetoothDeviceInfo
+    /// Whether every battery source has reported. Without it "—" would mean three different things,
+    /// one of which resolves by itself a moment later; see BluetoothInfo.batterySourcesSettled.
+    let sourcesSettled: Bool
 
     private var iconSize: CGFloat { 18 }
 
@@ -107,10 +110,18 @@ private struct BluetoothDeviceRow: View {
                 .font(.system(size: 13, weight: .semibold))
                 .monospacedDigit()
                 .foregroundStyle(pct <= 20 ? Color.red : Color.white)
+        } else if !sourcesSettled {
+            // The same "…" the hub uses for a metric that hasn't read yet, one level down. A GATT
+            // read is a connect → discover → read round trip, so this is a real state and not a
+            // theoretical one: a mouse that slept and reconnected sits here for a moment.
+            Text("…")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.secondary)
         } else {
             Text("—")
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.secondary)
+                .help("macOS reports no battery level for this device.")
         }
     }
 }

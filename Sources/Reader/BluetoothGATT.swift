@@ -36,6 +36,28 @@ final class BluetoothGATT: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
     private var peripherals: [UUID: CBPeripheral] = [:]        // retained so delegate callbacks fire
     private var batteryChars: [UUID: CBCharacteristic] = [:]   // cached for cheap re-reads
 
+    /// Peripherals we have started a first read on and not yet heard back from, one way or the
+    /// other. Only the FIRST read counts: a re-read of a characteristic we already have a value for
+    /// leaves the old level on screen, so it is not a state anyone is waiting on.
+    private var awaitingFirstRead: Set<UUID> = []
+
+    /// Whether this source has finished having its say, so a device still without a level can be
+    /// called batteryless rather than pending. Not merely `levelsByName.isEmpty` — that is true both
+    /// before the first read and on a machine with no BLE accessory at all.
+    var settled: Bool {
+        guard let central else { return false }
+        switch central.state {
+        // CoreBluetooth has not reported in yet; asking now tells us nothing. `init` publishes long
+        // before this resolves, which is why the very first popover open used to show a dash for a
+        // mouse that was about to report 90%.
+        case .unknown, .resetting: return false
+        case .poweredOn: return awaitingFirstRead.isEmpty
+        // Off, unauthorised or unsupported: this source will never answer, and saying so is the
+        // truthful outcome rather than leaving every row pending forever.
+        default: return true
+        }
+    }
+
     private let batteryService = CBUUID(string: "180F")
     private let batteryLevel = CBUUID(string: "2A19")
 
@@ -57,6 +79,7 @@ final class BluetoothGATT: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
             } else {
                 peripherals[peripheral.identifier] = peripheral
                 peripheral.delegate = self
+                awaitingFirstRead.insert(peripheral.identifier)
                 central.connect(peripheral, options: nil)
             }
         }
@@ -75,13 +98,20 @@ final class BluetoothGATT: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
             // adapter shows no battery rather than a frozen last reading.
             peripherals.removeAll()
             batteryChars.removeAll()
-            if !levelsByName.isEmpty {
-                levelsByName.removeAll()
-                onUpdate?()
-            }
+            // Nothing is in flight any more, and `settled` reports true for these states anyway.
+            awaitingFirstRead.removeAll()
+            levelsByName.removeAll()
+            // Published unconditionally, unlike the old "only if a level was lost" test: `settled`
+            // has just become true for these states, and a row with no level has to stop saying "…"
+            // and admit there is nothing to wait for.
+            onUpdate?()
             return
         }
         refresh()
+        // Likewise on the way in. This is the transition out of .unknown, which is the state the
+        // very first publish always happens in, and refresh() has just decided whether anything is
+        // pending — so this is the moment the rows can stop guessing.
+        onUpdate?()
     }
 
     func centralManager(_ manager: CBCentralManager, didConnect peripheral: CBPeripheral) {
@@ -90,11 +120,13 @@ final class BluetoothGATT: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
 
     func centralManager(_ manager: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         peripherals[peripheral.identifier] = nil
+        finishFirstRead(peripheral)
     }
 
     func centralManager(_ manager: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         peripherals[peripheral.identifier] = nil
         batteryChars[peripheral.identifier] = nil
+        finishFirstRead(peripheral)
         // Drop the stale reading so a disconnected device doesn't show a frozen level.
         let name = (peripheral.name ?? "").trimmingCharacters(in: .whitespaces)
         if !name.isEmpty, levelsByName[name] != nil {
@@ -106,13 +138,17 @@ final class BluetoothGATT: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
     // MARK: CBPeripheralDelegate
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
-        for service in peripheral.services ?? [] where service.uuid == batteryService {
-            peripheral.discoverCharacteristics([batteryLevel], for: service)
-        }
+        let services = (peripheral.services ?? []).filter { $0.uuid == batteryService }
+        // Every exit from the round trip has to clear the pending flag, or one peripheral that
+        // errors or turns out to have no Battery Service leaves every row reading "…" forever.
+        guard error == nil, !services.isEmpty else { return finishFirstRead(peripheral) }
+        for service in services { peripheral.discoverCharacteristics([batteryLevel], for: service) }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
-        for ch in service.characteristics ?? [] where ch.uuid == batteryLevel {
+        let found = (service.characteristics ?? []).filter { $0.uuid == batteryLevel }
+        guard error == nil, !found.isEmpty else { return finishFirstRead(peripheral) }
+        for ch in found {
             batteryChars[peripheral.identifier] = ch
             peripheral.readValue(for: ch)
             if ch.properties.contains(.notify) { peripheral.setNotifyValue(true, for: ch) }
@@ -120,7 +156,11 @@ final class BluetoothGATT: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
-        guard characteristic.uuid == batteryLevel, let byte = characteristic.value?.first else { return }
+        guard characteristic.uuid == batteryLevel else { return }
+        // Answered, whatever the answer: a read that came back empty or failed is still this
+        // source's final word on the device, not a reason to keep the row pending.
+        finishFirstRead(peripheral)
+        guard let byte = characteristic.value?.first else { return }
         let name = (peripheral.name ?? "").trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty else { return }
         let percent = min(100, Int(byte))
@@ -128,5 +168,12 @@ final class BluetoothGATT: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
             levelsByName[name] = percent
             onUpdate?()
         }
+    }
+
+    /// Mark a peripheral as no longer awaited, and republish if that was the last one — otherwise a
+    /// row would sit on "…" until some later event happened to trigger a publish.
+    private func finishFirstRead(_ peripheral: CBPeripheral) {
+        guard awaitingFirstRead.remove(peripheral.identifier) != nil else { return }
+        if awaitingFirstRead.isEmpty { onUpdate?() }
     }
 }
