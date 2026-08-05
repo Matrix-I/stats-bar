@@ -149,7 +149,7 @@ split — both of this repo's shipped memory bugs printed believable gigabytes a
 A new pure file can go anywhere in `Sources/Core` with no manifest to update: the test target is the
 directory, and `build_app.sh` finds every `.swift` under `Sources/` regardless.
 
-Today that is roughly one line in ten — about 830 of the 8,450 under `Sources/` — so a green suite is a
+Today that is roughly one line in nine — about 1,020 of the 8,880 under `Sources/` — so a green suite is a
 statement about the arithmetic and nothing else. For anything touching a reader or a view, compile the
 whole tree the way CI does:
 
