@@ -31,12 +31,32 @@ final class AndroidDeviceReader: ObservableObject {
     private var isBusy = false
     private lazy var poll = PollingTimer { [weak self] in self?.tick() }
 
-    /// Popover visibility, driven by BatteryDetailView (the only view that shows Android data). While
-    /// the popover is closed AND the Android menu-bar glyph is off, nothing consumes `devices`, so the
-    /// reader drops from its ~1 Hz cadence to a slow keep-warm — see tick(). Main-thread only.
+    /// Popover visibility, driven by BatteryDetailView (the only view that shows Android data).
+    /// Together with the Android menu-bar glyph it decides how often we look — see `watcher`.
+    /// Main-thread only.
     private var panelOpen = false
-    private var lastRefreshAt = Date.distantPast
-    private static let keepWarmInterval: TimeInterval = 10
+
+    /// Which interval applies to which audience, and how long a device may be missing before it is
+    /// dropped — the same Sources/Core type IOSDeviceReader uses. `.android` because this reader has no
+    /// TemperatureAlerter, so it keeps the slower off-screen interval; see that property.
+    private static let cadence = DeviceReadCadence.android
+
+    /// Who can see the readings right now. Both the read cadence and the presence cache's ride-out
+    /// window are derived from this.
+    private var watcher: DeviceReadCadence.Watcher {
+        if panelOpen { return .popover }
+        return UserDefaults.standard.bool(forKey: "showAndroidMenuBar") ? .glyph : .nobody
+    }
+
+    /// Point the timer at the interval the current audience deserves.
+    ///
+    /// This replaces a flat 1 Hz timer whose ticks were gated on elapsed time, which is the two-rate
+    /// arrangement DeviceReadCadence's header argues against at length: a read starting a few
+    /// milliseconds after a tick leaves the next tick fractionally short of the interval, so it skips,
+    /// and the effective cadence drifts off the one written down. One rate cannot beat against itself.
+    private func applyCadence() {
+        poll.schedule(every: Self.cadence.interval(watcher, deviceAttached: !devices.isEmpty))
+    }
 
     /// Which device to show as read and which to keep showing while its reads fail, plus the cache of
     /// last-good reads behind that. The same Sources/Core type IOSDeviceReader uses, so the staleness
@@ -44,11 +64,20 @@ final class AndroidDeviceReader: ObservableObject {
     /// keep resetting the grace window and hide another phone's error, and one good read can't evict
     /// another device's cached health. Main-thread only (touched inside publish).
     ///
-    /// 5 s to disappear once off the bus — a little longer than the iOS reader's 3 s, because adb
-    /// enumeration blips more — and the default 30 s to ride out an enumerated but unreadable device.
-    /// Nothing here produces `.partial`: an Android read either works or carries an errorMessage, so
-    /// there is no locked-device equivalent to graft cached health onto.
-    private var presence = DevicePresenceCache<AndroidDeviceInfo, String>(graceGone: 5)
+    /// `graceGone` is re-derived on every publish from the interval actually in force, so the value
+    /// passed here only covers the very first read. It used to be a flat 5 s against a keep-warm
+    /// cadence of 10 s, which is a ride-out that CANNOT FIRE: by the time the next tick enumerated,
+    /// the previous sighting was already twice the age of the window, so the first blip dropped the
+    /// device outright. That is precisely the defect DeviceReadCadence was extracted to end for the
+    /// iOS reader — the comment here even justified the number by comparison with an iOS constant that
+    /// had already been deleted — and it stayed live in this file for the whole time.
+    ///
+    /// The default 30 s `graceUnreadable` stands: a device still enumerated but unreadable tends to
+    /// recover on its own. Nothing here produces `.partial` — an Android read either works or carries
+    /// an errorMessage, so there is no locked-device equivalent to graft cached health onto.
+    private var presence = DevicePresenceCache<AndroidDeviceInfo, String>(
+        graceGone: AndroidDeviceReader.cadence.graceGone(.popover, deviceAttached: false)
+    )
 
     /// Runs the enumeration off the main thread and owns the caches that outlive a single refresh
     /// (device identities, learned battery capacity). See the type for why it is a queue-confined
@@ -57,23 +86,26 @@ final class AndroidDeviceReader: ObservableObject {
 
     init() {
         refresh()
-        poll.schedule(every: 1)
+        applyCadence()
     }
 
-    /// Called by BatteryDetailView's visibility reporter. Like the iOS reader, no forced read on open
-    /// — the next fast tick (within ~1 s) refreshes and the warm cache shows meanwhile.
-    func setPanelOpen(_ open: Bool) { panelOpen = open }
-
-    /// The 1 Hz timer's handler. Runs a full refresh() while the popover is open OR the Android
-    /// menu-bar glyph is enabled (it shows a live phone %, rebuilt ~1 Hz by AppDelegate). Otherwise it
-    /// merely keeps the cache warm on a slow cadence, so opening the popover still shows recent data
-    /// instead of shelling out to adb every second for something nobody is looking at.
-    private func tick() {
-        let active = panelOpen || UserDefaults.standard.bool(forKey: "showAndroidMenuBar")
-        guard active || Date().timeIntervalSince(lastRefreshAt) >= Self.keepWarmInterval else { return }
-        lastRefreshAt = Date()
-        refresh()
+    /// Called by BatteryDetailView's visibility reporter. Forces a read on the opening edge, which is
+    /// what BatteryReader and IOSDeviceReader both do.
+    ///
+    /// The comment here used to claim parity with the iOS reader in NOT forcing one. That stopped
+    /// being true when the iOS reader started forcing it, and the asymmetry it left behind is the
+    /// reason the Android card was the one still showing the previous keep-warm reading — up to ten
+    /// seconds old — at the moment the popover appeared.
+    func setPanelOpen(_ open: Bool) {
+        guard open != panelOpen else { return }
+        panelOpen = open
+        applyCadence()
+        if open { refresh() }
     }
+
+    /// The timer's handler. The timer already runs at the right interval (see applyCadence), so every
+    /// tick is a read; `refresh`'s isBusy guard is what keeps a slow adb cycle from piling up.
+    private func tick() { refresh() }
 
     func refresh() {
         guard !isBusy else { return }
@@ -90,6 +122,12 @@ final class AndroidDeviceReader: ObservableObject {
     private func publish(devices fresh: [AndroidDeviceInfo], toolsMissing: Bool, status: String?) {
         self.isBusy = false
 
+        // Registered before the early return below, not after it: whether anything is attached is one
+        // of the cadence's inputs, and adb going missing empties the list, so that path has to relax
+        // the timer too or the reader keeps polling at the attached rate for a tool that is gone.
+        // IOSDeviceReader registers its two defers in the same place for the same reason.
+        defer { self.applyCadence() }
+
         if toolsMissing {
             self.toolsMissing = true
             self.devices = []
@@ -97,6 +135,12 @@ final class AndroidDeviceReader: ObservableObject {
             return
         }
         self.toolsMissing = false
+
+        // The ride-out window has to track how often we actually look — a window shorter than the
+        // polling interval can never fire. `deviceAttached` reads the list as it stands BEFORE this
+        // publish rewrites it, which is the conservative reading; the cache itself is what keeps a
+        // change here from applying retroactively to sightings taken under the old cadence.
+        presence.graceGone = Self.cadence.graceGone(watcher, deviceAttached: !self.devices.isEmpty)
 
         let resolved = presence.resolve(
             fresh, now: Date(), id: \.id,

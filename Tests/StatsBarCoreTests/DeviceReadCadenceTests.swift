@@ -20,10 +20,14 @@ import Foundation
 @Suite("Device read cadence")
 struct DeviceReadCadenceTests {
 
-    /// The cadence the app actually ships. The readers construct `DeviceReadCadence()` with no arguments,
-    /// so asserting against the defaults here pins the shipped numbers rather than a copy of them — the
-    /// mistake CLAUDE.md's "541 of 8,139" anecdote is about.
+    /// The cadence the app actually ships. IOSDeviceReader constructs `DeviceReadCadence()` with no
+    /// arguments, so asserting against the defaults here pins the shipped numbers rather than a copy of
+    /// them — the mistake CLAUDE.md's "541 of 8,139" anecdote is about.
     static let c = DeviceReadCadence()
+
+    /// The Android reader's, which differs in one interval and is likewise named on the type rather than
+    /// assembled at its call site, so this asserts against what that reader ships too.
+    static let android = DeviceReadCadence.android
 
     /// All four states, so a case that must hold for every audience can say so instead of picking one.
     static let states: [(watcher: DeviceReadCadence.Watcher, attached: Bool, name: String)] = [
@@ -94,6 +98,39 @@ struct DeviceReadCadenceTests {
                 < Self.c.graceGone(.nobody, deviceAttached: false))
     }
 
+    // MARK: The Android reader's cadence
+
+    @Test("the Android ride-out is never shorter than its own interval either")
+    func androidRideOutCoversAtLeastOneInterval() {
+        // The same invariant as above, asserted separately because the Android reader was NOT holding to
+        // it: a flat 5 s window against a 10 s keep-warm cadence, which is a ride-out that cannot fire
+        // at all. Deriving both from one type is what makes a divergence like that impossible rather
+        // than merely unlikely, and this is the assertion that says so.
+        for s in Self.states {
+            let i = Self.android.interval(s.watcher, deviceAttached: s.attached)
+            let g = Self.android.graceGone(s.watcher, deviceAttached: s.attached)
+            #expect(g > i, "\(s.name): ride-out \(g)s cannot survive a \(i)s polling gap")
+        }
+    }
+
+    @Test("the Android cadence differs from the iOS one only off-screen")
+    func androidDiffersOnlyWhereItHasAReason() {
+        // A named variant earns its keep only if the difference is the one it was named for. The
+        // off-screen interval stays slow because that reader has no TemperatureAlerter, so the faster
+        // one would buy nothing and cost an adb round trip every five seconds; everything else must be
+        // the shared numbers, not a second set quietly drifting from them.
+        for s in Self.states where !(s.watcher == .nobody && s.attached) {
+            #expect(Self.android.interval(s.watcher, deviceAttached: s.attached)
+                    == Self.c.interval(s.watcher, deviceAttached: s.attached), "\(s.name)")
+        }
+        #expect(Self.android.interval(.nobody, deviceAttached: true) == 10)
+        #expect(Self.c.interval(.nobody, deviceAttached: true) == 5)
+        // And with both `.nobody` intervals equal, being attached no longer changes the answer — which
+        // is exactly what this reader's own keep-warm timer did before it moved onto this type.
+        #expect(Self.android.interval(.nobody, deviceAttached: true)
+                == Self.android.interval(.nobody, deviceAttached: false))
+    }
+
     // MARK: The two types together
 
     /// Minimal stand-in for a phone row; the cache is generic, so nothing here needs Sources/Model.
@@ -136,5 +173,32 @@ struct DeviceReadCadenceTests {
         // is the behaviour the 3 s constant was written to produce and never did.
         #expect(derived > interval)
         #expect(run(graceGone: derived) == ["held", "gone"])
+    }
+
+    @Test("the Android reader's ride-out could not fire either, for twice the margin")
+    func theAndroidRideOutCouldNotFire() {
+        // The same shipped bug, in the file that did not get fixed when the iOS one did — and worse:
+        // 5 s against a 10 s keep-warm cadence, so the previous sighting was already twice the age of
+        // the window by the time the next tick enumerated. The comment beside that 5 s justified it as
+        // "a little longer than the iOS reader's 3 s", which is a comparison with a constant that had
+        // already been deleted, against an interval it never mentioned.
+        let epoch = Date(timeIntervalSince1970: 1_700_000_000)
+        func at(_ s: Double) -> Date { epoch.addingTimeInterval(s) }
+
+        let interval = Self.android.interval(.nobody, deviceAttached: true)
+        let derived = Self.android.graceGone(.nobody, deviceAttached: true)
+        #expect(interval == 10)
+
+        func firstBlip(graceGone: TimeInterval) -> String {
+            var cache = DevicePresenceCache<Dev, String>(graceGone: graceGone)
+            _ = cache.resolve([Dev(id: "a", capturedAt: at(0))], now: at(0), id: \.id,
+                              kind: { _ in .good }, capturedAt: \.capturedAt)
+            let rows = cache.resolve([], now: at(interval), id: \.id,
+                                     kind: { _ in .good }, capturedAt: \.capturedAt)
+            return rows.isEmpty ? "gone" : "held"
+        }
+
+        #expect(firstBlip(graceGone: 5) == "gone")          // what shipped
+        #expect(firstBlip(graceGone: derived) == "held")    // what the derived window does
     }
 }

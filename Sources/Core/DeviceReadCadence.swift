@@ -73,6 +73,20 @@ struct DeviceReadCadence {
         }
     }
 
+    /// The Android reader's cadence: the same numbers except off-screen, which stays at the idle
+    /// interval rather than dropping to 5 s.
+    ///
+    /// The 5 s above buys one thing — a hot-battery nudge that stays responsive while nobody is
+    /// looking — and AndroidDeviceReader has no TemperatureAlerter, so on that reader it buys nothing
+    /// and costs an adb round trip every five seconds for a number no one can see. Setting the two
+    /// `.nobody` intervals equal collapses the `deviceAttached` distinction for that reader, which is
+    /// what its own keep-warm timer already did before it moved onto this type.
+    ///
+    /// Named here rather than assembled at the call site so the header's claim above still holds:
+    /// a test asserting against `DeviceReadCadence.android` is asserting against the numbers that
+    /// reader ships, not against a copy of them.
+    static let android = DeviceReadCadence(offScreenInterval: 10)
+
     /// How long a device may be absent from enumeration before its cached row is dropped — one whole
     /// interval plus `blipMargin`, never a constant. See defect 1 above: a window shorter than the
     /// interval is dead code that reads like a safety net.
