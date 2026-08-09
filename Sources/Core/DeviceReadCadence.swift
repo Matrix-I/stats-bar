@@ -80,6 +80,11 @@ struct DeviceReadCadence {
     /// It follows that the window tightens as soon as somebody looks. Opening the popover moves a device
     /// from a 6.5 s ride-out to a 2.5 s one, which is what makes an unplug clear promptly on screen while
     /// still surviving a one-tick enumeration blip off it.
+    ///
+    /// The tightening applies from the next SIGHTING, not immediately: a device last enumerated under the
+    /// slow cadence keeps the window it was seen with until it is seen again. Otherwise the new window is
+    /// being applied to a gap that the old cadence chose, which drops the device on the opening edge. See
+    /// DevicePresenceCache.Sighting.
     func graceGone(_ watcher: Watcher, deviceAttached: Bool) -> TimeInterval {
         interval(watcher, deviceAttached: deviceAttached) + blipMargin
     }

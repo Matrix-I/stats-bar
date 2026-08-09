@@ -210,6 +210,70 @@ struct DevicePresenceCacheTests {
         #expect(Self.tick(&android, [], at: 6) == [])
     }
 
+    // MARK: A window that moves under the cache's feet
+
+    @Test("tightening the window does not drop a device seen under the old one")
+    func tighteningIsNotRetroactive() {
+        // The opening edge of the popover, which is the one moment the user is definitely looking.
+        // IOSDeviceReader re-derives graceGone from how often it is currently reading, so opening the
+        // popover takes the window from 6.5 s to 2.5 s — and the last sighting was taken under the
+        // 5 s cadence, so it can already be 5 s old. Judged by the new window it is ancient, and one
+        // missed enumeration drops the row outright, taking the grafted health with it.
+        var c = Cache(graceGone: 6.5)
+        _ = Self.tick(&c, [Self.good("a", 1, at: 0)], at: 0)
+        c.graceGone = 2.5                                    // the popover opens
+        #expect(Self.tick(&c, [], at: 4) == ["a=stale:1"])   // 4 s old, but stamped when 6.5 s was normal
+        #expect(c.baseline.map { $0.mark } == [1])           // and its cached health survives with it
+        // A second blip, to reach the bookkeeping rather than just the answer. lastSeenAt is pruned on
+        // every tick, and pruning it by the CURRENT window instead of the stored one is the same bug in
+        // a second place: the row above still renders, the sighting is quietly dropped behind it, and
+        // the device disappears one tick later as though it had never been seen. Mutation testing
+        // found this one — the single-tick assertion above passes with that prune in place.
+        #expect(Self.tick(&c, [], at: 5) == ["a=stale:1"])
+        #expect(Self.tick(&c, [], at: 7) == [])              // 7 s: past even the window it carried
+    }
+
+    @Test("the tightening takes effect once the device is seen again")
+    func tighteningAppliesFromTheNextSighting() {
+        // The other half, and the reason this is max() rather than "always keep the longest window
+        // ever used": the tightening is deliberate — an unplug should clear promptly while somebody is
+        // watching — so it must actually happen, one successful enumeration later.
+        var c = Cache(graceGone: 6.5)
+        _ = Self.tick(&c, [Self.good("a", 1, at: 0)], at: 0)
+        c.graceGone = 2.5
+        _ = Self.tick(&c, [Self.good("a", 2, at: 1)], at: 1) // re-stamped under the tight window
+        #expect(Self.tick(&c, [], at: 3) == ["a=stale:2"])   // 2 s: still inside 2.5 s
+        #expect(Self.tick(&c, [], at: 4) == [])              // 3 s: now genuinely gone
+    }
+
+    @Test("relaxing the window does not drop a device seen under the tight one")
+    func relaxingIsNotRetroactiveEither() {
+        // The mirror case, and it fails for the same reason rather than the opposite one: the popover
+        // closes, the next look moves from 1 s away to 5 s away, and a sighting stamped with the 2.5 s
+        // window is now expected to survive a gap longer than that window. Taking the longer of the
+        // two covers both directions with one rule.
+        var c = Cache(graceGone: 2.5)
+        _ = Self.tick(&c, [Self.good("a", 1, at: 0)], at: 0)
+        c.graceGone = 6.5                                    // the popover closes
+        #expect(Self.tick(&c, [], at: 5) == ["a=stale:1"])
+        #expect(Self.tick(&c, [], at: 7) == [])
+    }
+
+    @Test("each device is judged against the window its own sighting carried")
+    func windowsAreStampedPerDevice() {
+        // Two phones seen one cadence apart. A single "window in force when anything was last seen"
+        // would give them the same answer; the whole point of storing it per sighting is that it does
+        // not. This is the same per-device reasoning 239a191 had to establish for the grace timer.
+        var c = Cache(graceGone: 6.5)
+        _ = Self.tick(&c, [Self.good("old", 1, at: 0)], at: 0)
+        c.graceGone = 2.5
+        _ = Self.tick(&c, [Self.good("old", 2, at: 1), Self.good("new", 3, at: 1)], at: 1)
+        c.graceGone = 2.5
+        // At t=3 both were last seen at t=1 under the 2.5 s window, so both are 2 s old and both stay.
+        #expect(Self.tick(&c, [], at: 3).sorted() == ["new=stale:3", "old=stale:2"])
+        #expect(Self.tick(&c, [], at: 4) == [])
+    }
+
     // MARK: Bookkeeping that has to stay bounded
 
     @Test("lastSeenAt does not grow with every device ever attached")
@@ -223,8 +287,8 @@ struct DevicePresenceCacheTests {
         _ = Self.tick(&c, [Self.good("c", 3, at: 20)], at: 20)
         #expect(c.lastSeenAt.keys.sorted() == ["c"])
         // And the answers are unchanged by that pruning: a is not "recently seen" either way.
-        #expect(c.seenWithin(3, "a", Self.at(20)) == false)
-        #expect(c.seenWithin(3, "c", Self.at(20)) == true)
+        #expect(c.seenWithin("a", Self.at(20)) == false)
+        #expect(c.seenWithin("c", Self.at(20)) == true)
     }
 
     @Test("a device that enumerates but cannot be read still counts as present")
@@ -235,7 +299,7 @@ struct DevicePresenceCacheTests {
         var c = Cache(graceGone: 3)
         _ = Self.tick(&c, [Self.good("a", 1, at: 0)], at: 0)
         _ = Self.tick(&c, [Self.failed("a", 2)], at: 10)
-        #expect(c.seenWithin(3, "a", Self.at(10)) == true)
+        #expect(c.seenWithin("a", Self.at(10)) == true)
         #expect(c.baseline.map { $0.mark } == [1])   // survived the prune, so it can still ride out
     }
 }

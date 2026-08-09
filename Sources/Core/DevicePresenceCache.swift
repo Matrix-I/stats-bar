@@ -68,6 +68,9 @@ struct DevicePresenceCache<Device, ID: Hashable> {
     /// false and the first blip drops the device — a safety net that reads like one and catches nothing.
     /// A `var` rather than a `let` for exactly that reason: a caller whose cadence changes has to move this
     /// with it. See DeviceReadCadence.graceGone, which derives it.
+    ///
+    /// Being a `var` is also what makes a change of window a question about the PAST, and the answer is
+    /// that it is never retroactive — see `Sighting` and `seenWithin`.
     var graceGone: TimeInterval
 
     /// How long a device that is still enumerated but unreadable may ride out on its last good read.
@@ -75,11 +78,25 @@ struct DevicePresenceCache<Device, ID: Hashable> {
     /// to recover on its own.
     var graceUnreadable: TimeInterval
 
+    /// One enumeration of one device: when it was seen, and the ride-out window that was in force at
+    /// that moment.
+    ///
+    /// The window is stored rather than looked up later because `graceGone` moves — it is derived from
+    /// how often the caller is currently reading, and that changes the instant somebody opens the
+    /// popover. Judging an old sighting by the new window makes the tightening RETROACTIVE: the iOS
+    /// reader goes from a 6.5 s window to a 2.5 s one on the opening edge, applies it to a sighting
+    /// recorded up to 5 s earlier under the slow cadence, and drops a device that is merely a second
+    /// late — taking its grafted health with it, on the one tick the user is definitely looking.
+    struct Sighting: Equatable {
+        var at: Date
+        var window: TimeInterval
+    }
+
     /// Last time each id appeared in a fresh enumeration — including devices that enumerated but failed
     /// to read, which count as present. Per-device on purpose: one global timestamp cannot express
     /// "device A left but device B is fine", and conflating them is how a healthy sibling ends up
     /// resetting another device's timer.
-    private(set) var lastSeenAt: [ID: Date] = [:]
+    private(set) var lastSeenAt: [ID: Sighting] = [:]
 
     /// The last good read of each device, in cache order. Exposed read-only because it is the state
     /// every decision below depends on, so a test that can see it can pin the cache behaviour directly.
@@ -102,12 +119,12 @@ struct DevicePresenceCache<Device, ID: Hashable> {
         kind: (Device) -> ReadKind,
         capturedAt: (Device) -> Date?
     ) -> [Resolved] {
-        for device in fresh { lastSeenAt[id(device)] = now }
+        for device in fresh { lastSeenAt[id(device)] = Sighting(at: now, window: graceGone) }
 
         // An id last seen longer ago than the gone window cannot change any answer below: seenWithin is
         // false for a stale entry and for a missing one alike. Dropping it keeps this dictionary from
         // growing by one entry per device ever attached in the session.
-        defer { lastSeenAt = lastSeenAt.filter { now.timeIntervalSince($0.value) < graceGone } }
+        defer { lastSeenAt = lastSeenAt.filter { now.timeIntervalSince($0.value.at) < effectiveWindow($0.value) } }
 
         // Nothing enumerated — the bus is empty. Ride out a one-tick blip on whatever was seen recently,
         // then let it go: a deliberate unplug should clear in a few seconds rather than linger.
@@ -117,7 +134,7 @@ struct DevicePresenceCache<Device, ID: Hashable> {
         // resurrecting later; pruning here as well would change when a returning device loses its
         // grafted health.
         if fresh.isEmpty {
-            return baseline.filter { seenWithin(graceGone, id($0), now) }.map { .cachedStale($0) }
+            return baseline.filter { seenWithin(id($0), now) }.map { .cachedStale($0) }
         }
 
         var shown: [Resolved] = []
@@ -158,16 +175,33 @@ struct DevicePresenceCache<Device, ID: Hashable> {
             else { baseline.append(g) }
         }
         // Then drop entries whose device has been off the bus longer than the ride-out window.
-        baseline = baseline.filter { seenWithin(graceGone, id($0), now) }
+        baseline = baseline.filter { seenWithin(id($0), now) }
 
         return shown
     }
 
-    /// True when `key` appeared in a fresh enumeration within `window` of `now`. A device never seen is
-    /// not "seen long ago" — both answer false, which is what makes pruning lastSeenAt invisible.
-    func seenWithin(_ window: TimeInterval, _ key: ID, _ now: Date) -> Bool {
+    /// True when `key` appeared in a fresh enumeration recently enough to ride out a missed tick. A
+    /// device never seen is not "seen long ago" — both answer false, which is what makes pruning
+    /// lastSeenAt invisible.
+    func seenWithin(_ key: ID, _ now: Date) -> Bool {
         guard let seen = lastSeenAt[key] else { return false }
-        return now.timeIntervalSince(seen) < window
+        return now.timeIntervalSince(seen.at) < effectiveWindow(seen)
+    }
+
+    /// The LONGER of the window in force now and the one in force when the sighting was recorded.
+    ///
+    /// Both directions need it, and they need it for the same reason: a sighting can only be judged
+    /// against a window that covers the gap to the next enumeration, and either end of that gap may
+    /// have been governed by the other cadence. Tightening (the popover opening) must not condemn a
+    /// sighting taken when a longer wait was normal. Relaxing (the popover closing) must not condemn
+    /// one taken under the tight window, because the next look is now further away than the window it
+    /// was stamped with.
+    ///
+    /// The tightening still takes effect — one successful enumeration later, when the device is
+    /// re-stamped with the new window. So an unplug still clears in about 2.5 s on screen, which is
+    /// what the tightening exists for; it just no longer costs a row on the opening edge.
+    private func effectiveWindow(_ seen: Sighting) -> TimeInterval {
+        max(seen.window, graceGone)
     }
 
     private func cached(_ key: ID, id: (Device) -> ID) -> Device? {

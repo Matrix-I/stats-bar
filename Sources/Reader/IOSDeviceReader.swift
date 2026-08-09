@@ -141,8 +141,16 @@ final class IOSDeviceReader: ObservableObject {
         // The ride-out window has to track how often we actually look, so it is set here rather than once
         // at init: a window shorter than the polling interval can never fire, because the previous
         // sighting is already older than it by the time the next tick enumerates. `deviceAttached` reads
-        // the list as it stands BEFORE this publish rewrites it — that is the cadence the sighting was
-        // recorded under, which is the interval the window has to cover. See DeviceReadCadence.graceGone.
+        // the list as it stands BEFORE this publish rewrites it, which is the conservative reading — it
+        // can only make the window longer than the next interval, never shorter.
+        //
+        // Assigning it mid-run used to be half a fix. `deviceAttached` was read pre-publish precisely so
+        // the window matched the cadence the sighting was taken under, but `watcher` beside it is read
+        // live, so opening the popover cut the window from 6.5 s to 2.5 s and applied it to a sighting up
+        // to 5 s old — dropping a device that missed one enumeration, on the tick the user was definitely
+        // looking, and taking its grafted health with it. The cache now stamps each sighting with the
+        // window in force when it was taken and judges it by the longer of that and this one, so a change
+        // here is never retroactive. See DevicePresenceCache.Sighting.
         presence.graceGone = Self.cadence.graceGone(watcher, deviceAttached: !self.devices.isEmpty)
 
         // Each fresh read is one of three kinds:
