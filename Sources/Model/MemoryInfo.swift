@@ -43,7 +43,11 @@ struct MemoryInfo {
     // Read-only forwards, so the panels and the menu-bar label keep reading `info.free` rather than
     // `info.buckets.free` at some twenty call sites. Nothing is computed here: every one of these is
     // MemoryBuckets' own property, and that is the only place the arithmetic exists.
+    /// The spec-sheet figure, for the headline above the rings and nothing else. Every ratio uses
+    /// `total`, which is the RAM the VM actually manages — see MemoryBuckets.
+    var installed: UInt64  { buckets.installed }
     var total: UInt64      { buckets.total }
+    var reserved: UInt64   { buckets.reserved }
     var app: UInt64        { buckets.app }
     var wired: UInt64      { buckets.wired }
     var compressed: UInt64 { buckets.compressed }

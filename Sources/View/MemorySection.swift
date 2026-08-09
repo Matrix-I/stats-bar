@@ -57,7 +57,7 @@ struct MemoryDetailView: View {
     @ViewBuilder
     private var rings: some View {
         VStack(spacing: 6) {
-            if info.total > 0 {
+            if info.installed > 0 {
                 Text(totalText)
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(.white)
@@ -76,8 +76,13 @@ struct MemoryDetailView: View {
 
     /// Total installed RAM shown above the rings, e.g. "16 GB" — macOS ships exact power-of-two-GiB
     /// modules, so the rounded whole number is accurate. The analog of the CPU tab's chip subtitle.
+    ///
+    /// `installed`, not `total`: this is the one place the nameplate belongs, because it is the number
+    /// on the spec sheet and the one a reader can check. `total` is smaller by the firmware carveout —
+    /// showing it here would announce a 16 GB Mac as a 15 GB one, which is the trade the two-field
+    /// split exists to avoid. The carveout is accounted for in the DETAILS list instead, as Reserved.
     private var totalText: String {
-        String(format: "%.0f GB", Double(info.total) / 1_073_741_824)
+        String(format: "%.0f GB", Double(info.installed) / 1_073_741_824)
     }
 
     /// Memory pressure — the arc fills to the non-reclaimable share (wired + compressed), coloured
@@ -148,6 +153,13 @@ struct MemoryDetailView: View {
             LegendRow(color: Self.compressedColor, label: "Compressed", value: fmtGB(info.compressed))
             LegendRow(color: Self.cachedColor, label: "Cached Files", value: fmtGB(info.cached))
             LegendRow(color: Self.freeColor, label: "Free", value: fmtGB(info.free))
+            // No colour dot, because it is not a segment of the bar: the bar tiles the RAM the VM
+            // manages, and this is the part it does not. Listed all the same so the six rows add up to
+            // the installed figure in the headline — otherwise a reader who checks the arithmetic finds
+            // 0.6 GB missing and no explanation, which is how the old Free row came to swallow it.
+            if info.reserved > 0 {
+                InfoRow(label: "Reserved", value: fmtGB(info.reserved))
+            }
             InfoRow(label: "Swap", value: fmtGB(info.swapUsed))
         }
     }

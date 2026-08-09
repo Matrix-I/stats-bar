@@ -3,9 +3,14 @@
 // same App / Wired / Compressed / Free buckets macOS Activity Monitor shows. No root needed.
 //
 // Page counts come back in units of vm_kernel_page_size (16 KiB on Apple Silicon, 4 KiB on Intel —
-// the same size `vm_stat` prints), so that's the multiplier used to turn pages into bytes. Total is
-// taken from ProcessInfo.physicalMemory (exact hw.memsize) rather than summing pages, so the
-// bar's Free remainder is precise.
+// the same size `vm_stat` prints), so that's the multiplier used to turn pages into bytes.
+//
+// ProcessInfo.physicalMemory (exact hw.memsize) is passed as `installed` — the nameplate — and NOT as
+// the figure the buckets are measured against. It used to be both, on the reasoning that taking the
+// exact hardware total made the bar's Free remainder precise. That reasoning is backwards, and it is
+// the bug MemoryBuckets was rewritten for: hw.memsize includes a firmware carveout the page counters
+// never report, so making Free the remainder of it made Free precisely wrong by the size of the
+// carveout. Every bucket is now read from the page counts, Free included; see MemoryBuckets.
 
 import Foundation
 
@@ -42,8 +47,10 @@ enum MemoryStats {
         // is unit-tested. This function's job is only to gather the four numbers it needs.
         var info = MemoryInfo()
         info.buckets = MemoryBuckets.fromPages(
-            total: total,
-            pages: VMPageCounts(wired: stats.wire_count,
+            installed: total,
+            pages: VMPageCounts(free: stats.free_count,
+                                speculative: stats.speculative_count,
+                                wired: stats.wire_count,
                                 compressed: stats.compressor_page_count,
                                 internalPages: stats.internal_page_count,
                                 purgeable: stats.purgeable_count,
