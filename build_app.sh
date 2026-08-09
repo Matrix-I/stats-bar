@@ -70,8 +70,8 @@ cat > "$APP.app/Contents/Info.plist" <<'PLIST'
          CFBundleVersion deliberately carries NO suffix — Apple requires one to three period-separated
          integers there, and Sparkle compares it against the appcast to decide whether an update is
          newer, so it is bumped (without the suffix) at the same time. -->
-    <key>CFBundleShortVersionString</key><string>2.13.0-SNAPSHOT</string>
-    <key>CFBundleVersion</key>          <string>2.13.0</string>
+    <key>CFBundleShortVersionString</key><string>2.12.3</string>
+    <key>CFBundleVersion</key>          <string>2.12.3</string>
     <key>LSMinimumSystemVersion</key>   <string>13.0</string>
     <key>LSUIElement</key>              <true/>
     <!-- Sparkle auto-update. SUFeedURL is the appcast (kept in the repo, served raw from GitHub);
