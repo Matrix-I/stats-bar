@@ -39,7 +39,20 @@ final class BluetoothGATT: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
     /// Peripherals we have started a first read on and not yet heard back from, one way or the
     /// other. Only the FIRST read counts: a re-read of a characteristic we already have a value for
     /// leaves the old level on screen, so it is not a state anyone is waiting on.
-    private var awaitingFirstRead: Set<UUID> = []
+    ///
+    /// It has a deadline because `CBCentralManager.connect` has none: it retries indefinitely and
+    /// delivers no "still trying" callback, so a peripheral that is listed by
+    /// retrieveConnectedPeripherals and never completes a GATT connection would stay in here for the
+    /// life of the process. `settled` is false while anything is outstanding, and `settled` is what
+    /// tells every OTHER device's row to stop showing the pending ellipsis and admit it has no
+    /// battery — so one unreachable mouse hung the entire list, permanently. That is the same symptom
+    /// the two bugs already fixed in this file produced, arrived at a third way.
+    ///
+    /// Five seconds, which is BluetoothReader's poll cadence: a first read still outstanding a whole
+    /// polling interval after it began has already missed the refresh that would have carried it.
+    /// Expiring does NOT cancel the connection — see PendingFirstReads.deadline for why that
+    /// asymmetry is what makes the exact number uncritical.
+    private var awaitingFirstRead = PendingFirstReads<UUID>(deadline: 5)
 
     /// Whether this source has finished having its say, so a device still without a level can be
     /// called batteryless rather than pending. Not merely `levelsByName.isEmpty` — that is true both
@@ -51,7 +64,7 @@ final class BluetoothGATT: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
         // before this resolves, which is why the very first popover open used to show a dash for a
         // mouse that was about to report 90%.
         case .unknown, .resetting: return false
-        case .poweredOn: return awaitingFirstRead.isEmpty
+        case .poweredOn: return awaitingFirstRead.isSettled(now: Date())
         // Off, unauthorised or unsupported: this source will never answer, and saying so is the
         // truthful outcome rather than leaving every row pending forever.
         default: return true
@@ -73,13 +86,20 @@ final class BluetoothGATT: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
     /// connected. Safe to call often; a no-op until the central is powered on and authorised.
     func refresh() {
         guard central?.state == .poweredOn else { return }
+        // Sweep before enumerating, so a peripheral that has overrun its deadline stops holding the
+        // rows on the ellipsis at the same tick the next attempt is considered. The connection itself
+        // is left running: nothing is paid for leaving it pending, and if CoreBluetooth does finally
+        // connect, the ordinary delegate chain still discovers the characteristic and publishes the
+        // level. The peripheral also stays in `peripherals`, so the branch below does not re-issue a
+        // connect that is already outstanding and put the rows straight back into pending.
+        if awaitingFirstRead.expire(now: Date()) { onUpdate?() }
         for peripheral in central.retrieveConnectedPeripherals(withServices: [batteryService]) {
             if let existing = peripherals[peripheral.identifier] {
                 if let ch = batteryChars[existing.identifier] { existing.readValue(for: ch) }
             } else {
                 peripherals[peripheral.identifier] = peripheral
                 peripheral.delegate = self
-                awaitingFirstRead.insert(peripheral.identifier)
+                awaitingFirstRead.begin(peripheral.identifier, at: Date())
                 central.connect(peripheral, options: nil)
             }
         }
@@ -173,7 +193,6 @@ final class BluetoothGATT: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
     /// Mark a peripheral as no longer awaited, and republish if that was the last one — otherwise a
     /// row would sit on "…" until some later event happened to trigger a publish.
     private func finishFirstRead(_ peripheral: CBPeripheral) {
-        guard awaitingFirstRead.remove(peripheral.identifier) != nil else { return }
-        if awaitingFirstRead.isEmpty { onUpdate?() }
+        if awaitingFirstRead.finish(peripheral.identifier) { onUpdate?() }
     }
 }
