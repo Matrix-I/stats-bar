@@ -50,28 +50,24 @@ struct IOSDeviceInfo: Identifiable, Sendable {
         // still reports a coarse 0–100% charge level (also the calibrated SoC).
         return lockedChargePercent
     }
+    /// The two health percentages this card may show, decided together — see BatteryHealthFigures for
+    /// why that has to be one decision rather than two properties that each look reasonable alone.
+    var healthFigures: BatteryHealthFigures {
+        BatteryHealthFigures(
+            preferred: BatteryHealthFigures.percent(nominalChargeCapacity, of: designCapacity),
+            raw: BatteryHealthFigures.percent(maxCapacity, of: designCapacity)
+        )
+    }
     /// iOS's own "Maximum Capacity" (Settings → Battery → Battery Health). iOS derives it from
     /// NominalChargeCapacity / DesignCapacity — the gauge's learned nominal capacity against the
     /// design rating — which reads a couple of points higher than the raw full-charge ratio
     /// (AppleRawMaxCapacity / DesignCapacity). Falls back to that raw ratio only when the nominal
-    /// key is absent, so the row always shows something.
-    var maximumCapacityPercent: Double? {
-        guard let design = designCapacity, design > 0 else { return nil }
-        if let nominal = nominalChargeCapacity, nominal > 0 {
-            return Double(nominal) / Double(design) * 100
-        }
-        if let max = maxCapacity, max > 0 {
-            return Double(max) / Double(design) * 100
-        }
-        return nil
-    }
+    /// key is absent or zero, so the row always shows something.
+    var maximumCapacityPercent: Double? { healthFigures.maximumCapacity }
     /// Raw full-charge-vs-design ratio (AppleRawMaxCapacity / DesignCapacity) — the
     /// coconutBattery-style number, shown small beside Maximum Capacity for the technically
     /// inclined. nil (and hidden) when it would just duplicate the figure above.
-    var rawHealthPercent: Double? {
-        guard let max = maxCapacity, max > 0, let design = designCapacity, design > 0 else { return nil }
-        return Double(max) / Double(design) * 100
-    }
+    var rawHealthPercent: Double? { healthFigures.raw }
     var watts: Double? {
         guard let v = voltageV, let a = amperageA else { return nil }
         return v * a

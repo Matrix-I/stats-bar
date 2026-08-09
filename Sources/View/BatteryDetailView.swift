@@ -237,7 +237,11 @@ struct BatteryDetailView: View {
                         .foregroundStyle(healthColor(i.displayMaximumCapacity))
                 }
                 BarView(pct: i.displayMaximumCapacity, color: healthColor(i.displayMaximumCapacity))
-                Text("\(i.maxCapacity) / \(i.designCapacity) mAh · raw \(String(format: "%.1f%%", i.healthPercent))")
+                // The mAh pair is always worth printing; the "· raw" tail only when it is a SECOND
+                // figure. Before the first system_profiler read lands — every launch — the headline
+                // above already is this ratio, and printing it again read as corroboration.
+                Text("\(i.maxCapacity) / \(i.designCapacity) mAh"
+                     + (i.rawHealthPercent.map { String(format: " · raw %.1f%%", $0) } ?? ""))
                     .font(.caption2).foregroundStyle(.secondary).monospacedDigit()
             }
 
@@ -410,7 +414,11 @@ struct BatteryDetailView: View {
                                             .foregroundStyle(healthColor(mc))
                                     }
                                     BarView(pct: mc, color: healthColor(mc))
-                                    if device.nominalChargeCapacity != nil, let raw = device.rawHealthPercent {
+                                    // rawHealthPercent is nil exactly when it would restate the figure
+                                    // above; the old `nominalChargeCapacity != nil` test asked whether
+                                    // the key was PRESENT while the headline asked whether it was
+                                    // usable, so a device publishing zero there printed both.
+                                    if let raw = device.rawHealthPercent {
                                         Text(String(format: "raw %.1f%% (vs design)", raw))
                                             .font(.caption2).foregroundStyle(.secondary).monospacedDigit()
                                     }

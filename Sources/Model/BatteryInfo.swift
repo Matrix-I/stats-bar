@@ -88,8 +88,18 @@ struct BatteryInfo {
     /// first read lands. macOS's figure comes from a private, smoothed algorithm no public IOKit
     /// key reproduces, so the raw ratio here reads a few points lower than what macOS reports.
     var displayMaximumCapacity: Double {
-        maximumCapacityPercent.map(Double.init) ?? healthPercent
+        healthFigures.maximumCapacity ?? 0
     }
+    /// The two health percentages this card may show, decided together — see BatteryHealthFigures.
+    /// The Mac takes the fallback below on every launch, for as long as system_profiler takes to
+    /// answer, so the caption underneath cannot be printed unconditionally.
+    var healthFigures: BatteryHealthFigures {
+        BatteryHealthFigures(preferred: maximumCapacityPercent.map(Double.init),
+                             raw: BatteryHealthFigures.percent(maxCapacity, of: designCapacity))
+    }
+    /// The raw full-charge-vs-design ratio to print beneath Maximum Capacity, or nil when that
+    /// headline IS this ratio and printing it again would invent a second source for one number.
+    var rawHealthPercent: Double? { healthFigures.raw }
     var watts: Double { voltageV * amperageA }
 
     /// Share of the pack's rated cycle life already used (0…1), or nil when no rating is published.
