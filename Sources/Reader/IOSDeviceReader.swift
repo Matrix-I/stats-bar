@@ -267,13 +267,21 @@ private final class IOSDeviceWorker: @unchecked Sendable {
             var dev = IOSDeviceInfo(id: udid)
             dev.isNetwork = network
 
+            // Identity is up to four calls — a batch dump, then three single-key fallbacks — and until
+            // now every one of them took DeviceTool.run's default with nothing capping the sequence.
+            // That is the shape the registry and enumeration probes were given a Budget for, left in
+            // the same function: measured against a tool that blocks, this path alone cost 16 s of the
+            // 25 s a wedged device took per cycle, and it re-ran every cycle because a failed identity
+            // read caches nothing.
+            let identity = Budget(Self.identityBudget)
             let trusted: Bool
             if let cached = infoCache[udid] {
                 dev.name = cached.name
                 dev.model = cached.model
                 dev.iosVersion = cached.iosVersion
                 trusted = true
-            } else if let batch = readDeviceInfoPlist(ideviceInfoPath, udid: udid, network: network) {
+            } else if let batch = readDeviceInfoPlist(ideviceInfoPath, udid: udid, network: network,
+                                                      timeout: identity.callTimeout) {
                 dev.name = batch.name
                 dev.model = batch.model
                 dev.iosVersion = batch.iosVersion
@@ -282,9 +290,17 @@ private final class IOSDeviceWorker: @unchecked Sendable {
                     infoCache[udid] = batch
                 }
             } else {
-                let named = infoValue(ideviceInfoPath, udid: udid, key: "DeviceName", network: network)
-                let model = infoValue(ideviceInfoPath, udid: udid, key: "ProductType", network: network) ?? ""
-                let version = infoValue(ideviceInfoPath, udid: udid, key: "ProductVersion", network: network) ?? ""
+                // Each fallback is asked for separately, so each has to be gated separately: without
+                // this the batch call could spend the whole budget and the three below would still
+                // run, at a full timeout each, which is the 16 s.
+                func fallback(_ key: String) -> String? {
+                    guard identity.allowsAnotherCall else { return nil }
+                    return infoValue(ideviceInfoPath, udid: udid, key: key, network: network,
+                                     timeout: identity.callTimeout)
+                }
+                let named = fallback("DeviceName")
+                let model = fallback("ProductType") ?? ""
+                let version = fallback("ProductVersion") ?? ""
                 dev.name = named ?? udid
                 dev.model = model
                 dev.iosVersion = version
@@ -315,7 +331,8 @@ private final class IOSDeviceWorker: @unchecked Sendable {
                 dev.capturedAt = Date()
             } else if trusted {
                 dev.isLocked = true
-                if let batt = readBatteryDomain(ideviceInfoPath, udid: udid, network: network) {
+                if let batt = readBatteryDomain(ideviceInfoPath, udid: udid, network: network,
+                                                timeout: DeviceTool.toolTimeout) {
                     dev.lockedChargePercent = batt.pct
                     dev.isCharging = batt.isCharging
                     dev.externalConnected = batt.external
@@ -333,7 +350,7 @@ private final class IOSDeviceWorker: @unchecked Sendable {
 
     /// A wall-clock deadline for one multi-attempt probe.
     ///
-    /// Both retry loops below used to bound each CALL and nothing else, which is not a bound at all:
+    /// Every multi-call probe below used to bound each CALL and nothing else, which is not a bound at all:
     /// readBatteryRegistry's 3 attempts x 2 registry classes could sit for 3 x 2 x DeviceTool.toolTimeout
     /// plus its sleeps — 24.6 s, or 36.6 s once DeviceTool escalates to SIGKILL on a child that ignores
     /// SIGTERM — and listDevices' 5 attempts x 2 calls for 41.6 s. That matters beyond the wasted time:
@@ -370,10 +387,23 @@ private final class IOSDeviceWorker: @unchecked Sendable {
     /// answering — while capping the retry tail at one round rather than three.
     private static let registryBudget: TimeInterval = 8
 
+    /// Total wall-clock budget for establishing one device's name, model and iOS version. Enough for the
+    /// batch `-x` dump to take a full DeviceTool.toolTimeout and one single-key fallback to have the rest
+    /// — which is all a healthy device needs, since these calls answer in a few hundred milliseconds and
+    /// the result is then cached for as long as the device stays enumerated. It bites only on the device
+    /// that never answers, and there it is the difference between four full timeouts and one and a half.
+    ///
+    /// Deliberately a SEPARATE budget from registryBudget rather than one shared per-device deadline: a
+    /// wedged identity read must not be able to eat the registry read's allowance, because the registry
+    /// is what fills the card. The per-device worst case is therefore the sum, not the smaller of the two.
+    private static let identityBudget: TimeInterval = 6
+
     private func transportArgs(_ network: Bool) -> [String] { network ? ["-n"] : [] }
 
-    private func infoValue(_ path: String, udid: String, key: String, network: Bool) -> String? {
-        guard let data = DeviceTool.run(path, transportArgs(network) + ["-u", udid, "-k", key]),
+    private func infoValue(_ path: String, udid: String, key: String, network: Bool,
+                           timeout: TimeInterval) -> String? {
+        guard let data = DeviceTool.run(path, transportArgs(network) + ["-u", udid, "-k", key],
+                                        timeout: timeout),
               let str = String(data: data, encoding: .utf8) else { return nil }
         let trimmed = str.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
@@ -404,9 +434,13 @@ private final class IOSDeviceWorker: @unchecked Sendable {
         return []
     }
 
-    private func readBatteryDomain(_ path: String, udid: String, network: Bool)
+    /// One call, so its own timeout IS the whole probe's bound and there is no loop to budget. The
+    /// parameter exists anyway, and is passed explicitly at the call site, so that whoever adds a
+    /// retry here sees that they are the ones who then owe it a Budget.
+    private func readBatteryDomain(_ path: String, udid: String, network: Bool, timeout: TimeInterval)
         -> (pct: Double, isCharging: Bool, external: Bool, full: Bool)? {
-        guard let data = DeviceTool.run(path, transportArgs(network) + ["-u", udid, "-q", "com.apple.mobile.battery", "-x"]),
+        guard let data = DeviceTool.run(path, transportArgs(network) + ["-u", udid, "-q", "com.apple.mobile.battery", "-x"],
+                                        timeout: timeout),
               let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
               let pct = intOrNil(plist["BatteryCurrentCapacity"]) else { return nil }
         return (Double(pct),
@@ -434,8 +468,10 @@ private final class IOSDeviceWorker: @unchecked Sendable {
         return nil
     }
 
-    private func readDeviceInfoPlist(_ path: String, udid: String, network: Bool) -> (name: String, model: String, iosVersion: String)? {
-        guard let data = DeviceTool.run(path, transportArgs(network) + ["-u", udid, "-x"]),
+    private func readDeviceInfoPlist(_ path: String, udid: String, network: Bool,
+                                     timeout: TimeInterval) -> (name: String, model: String, iosVersion: String)? {
+        guard let data = DeviceTool.run(path, transportArgs(network) + ["-u", udid, "-x"],
+                                        timeout: timeout),
               let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
               let name = plist["DeviceName"] as? String, !name.isEmpty else { return nil }
         let model = (plist["ProductType"] as? String) ?? ""
