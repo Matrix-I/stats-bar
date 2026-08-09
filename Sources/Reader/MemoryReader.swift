@@ -87,22 +87,51 @@ final class MemoryReader: ObservableObject {
         }
     }
 
-    /// The `count` heaviest processes by resident memory: `ps -o rss` (KiB) sorted with `-m`
-    /// (descending by memory). Like CPUReader's list, GUI apps get their NSRunningApplication name +
-    /// icon via ProcessList. pid 0 is skipped.
+    /// The `count` heaviest processes, measured the way Activity Monitor's "Memory" column is — by
+    /// phys_footprint, not by resident set size. Ranking happens in Sources/Core; see
+    /// ProcessMemoryRanking for why that is a ranking problem rather than a unit conversion.
+    ///
+    /// `ps` is still what enumerates, because it is one spawn for every process and gives us the
+    /// accounting name in the same breath. Its `-m` sort is gone: we re-rank on a different quantity,
+    /// so asking `ps` to sort would only be work thrown away.
     nonisolated private static func readTopProcesses(_ count: Int) -> [MemoryProcess] {
-        guard let data = DeviceTool.run("/bin/ps", ["-A", "-c", "-o", "pid=,rss=,comm=", "-m"]),
+        guard let data = DeviceTool.run("/bin/ps", ["-A", "-c", "-o", "pid=,rss=,comm="]),
               let out = String(data: data, encoding: .utf8) else { return [] }
-        var result: [MemoryProcess] = []
+        var samples: [ProcessMemorySample] = []
         for line in out.split(separator: "\n") {
             let parts = line.split(separator: " ", omittingEmptySubsequences: true)
             guard parts.count >= 3, let pid = Int(parts[0]), let rssKB = UInt64(parts[1]), pid != 0 else { continue }
-            let comm = parts[2...].joined(separator: " ")
-            let (name, icon) = ProcessList.identity(pid: pid, fallback: comm)
-            result.append(MemoryProcess(pid: pid, name: name, bytes: rssKB * 1024, icon: icon))
-            if result.count >= count { break }
+            samples.append(ProcessMemorySample(pid: pid,
+                                               command: parts[2...].joined(separator: " "),
+                                               residentBytes: rssKB * 1024,
+                                               footprintBytes: footprintBytes(pid)))
         }
-        return result
+        // Identity is resolved only for the survivors, and that order is load-bearing:
+        // NSRunningApplication(processIdentifier:) is a lookup per pid, so hoisting it above the rank
+        // would turn six of them into one for every process on the machine — about 840 here.
+        return ProcessMemoryRanking.top(count, from: samples).map { sample in
+            let (name, icon) = ProcessList.identity(pid: sample.pid, fallback: sample.command)
+            return MemoryProcess(pid: sample.pid, name: name, bytes: sample.effectiveBytes, icon: icon)
+        }
+    }
+
+    /// A process's phys_footprint, or nil when we may not ask.
+    ///
+    /// EPERM for another user's processes is the normal case, not a failure — 330 of 840 pids on the
+    /// machine this was written on, all root daemons — so the caller falls back to resident size for
+    /// those rather than dropping them from the table. Cheap enough to ask about every pid rather than
+    /// guessing which ones matter: 2.1 µs a call, 1.77 ms for the whole process list, against the ~30 ms
+    /// the `ps` spawn itself costs. Guessing would defeat the point anyway, since the processes worth
+    /// finding are exactly the ones whose resident size understates them.
+    nonisolated private static func footprintBytes(_ pid: Int) -> UInt64? {
+        var info = rusage_info_v4()
+        let rc = withUnsafeMutablePointer(to: &info) { pointer in
+            pointer.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { rebound in
+                proc_pid_rusage(pid_t(pid), RUSAGE_INFO_V4, rebound)
+            }
+        }
+        guard rc == 0 else { return nil }
+        return info.ri_phys_footprint
     }
 
     /// The macOS memory-pressure level. The sysctl returns the dispatch-source constants
