@@ -228,19 +228,6 @@ func controlCenterMenuBarImage() -> NSImage {
     return img
 }
 
-/// Short bytes/sec for the menu bar — one significant decimal from KB up, so the label stays narrow.
-/// Not private: AppDelegate builds the network glyph's cache key from these formatted strings, so it
-/// rebuilds the image only when the displayed text changes (not on every sub-unit rate wobble).
-func menuBarRate(_ bytesPerSec: Double) -> String {
-    let v = max(0, bytesPerSec)
-    if v < 1000 { return String(format: "%.0f B/s", v) }
-    let kb = v / 1000
-    if kb < 1000 { return String(format: "%.0f KB/s", kb) }
-    let mb = kb / 1000
-    if mb < 1000 { return String(format: "%.1f MB/s", mb) }
-    return String(format: "%.1f GB/s", mb / 1000)
-}
-
 /// Mac + iPhone in one menu-bar item: laptop glyph + Mac battery, then iPhone glyph +
 /// iPhone battery, all composited into a SINGLE template image. Baking it avoids the
 /// HStack reordering the real MenuBarExtra applies to multi-view labels.

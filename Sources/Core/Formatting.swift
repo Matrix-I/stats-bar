@@ -128,6 +128,30 @@ func fmtRateParts(_ bytesPerSec: Double) -> (value: String, unit: String) {
     return (valueStr, units[i])
 }
 
+/// Short bytes/sec for the menu bar: whole numbers up to KB/s, one decimal above, so the label stays
+/// narrow enough to sit beside the other items. Not private — AppDelegate builds the network glyph's
+/// image cache key from this string, so the glyph is redrawn only when the printed text changes
+/// rather than on every sub-unit wobble.
+///
+/// It lived in Sources/View/MenuBar.swift until now, which is the only interesting thing about it:
+/// the sweep that fixed exactly this defect in every formatter above never reached it, because the
+/// sweep was over this file. So the menu bar spent that whole time able to print "1000 KB/s" and
+/// "1000.0 MB/s" — readings its own banding says are a megabyte and a gigabyte — while the popover
+/// rows beside it had been correct for months. A formatter outside the layer the tests compile is a
+/// formatter nothing checks; that is the reason it moved rather than being patched in place.
+func menuBarRate(_ bytesPerSec: Double) -> String {
+    // 1000 minus half of the last digit each band prints, per the rule in the file header: 999.5 for
+    // the whole-number bands, 999.95 for the one-decimal one. Comparing against a flat 1000 is what
+    // let the top of a band round straight past the band it was chosen for.
+    let v = max(0, bytesPerSec)
+    if v < 999.5 { return String(format: "%.0f B/s", v) }
+    let kb = v / 1000
+    if kb < 999.5 { return String(format: "%.0f KB/s", kb) }
+    let mb = kb / 1000
+    if mb < 999.95 { return String(format: "%.1f MB/s", mb) }
+    return String(format: "%.1f GB/s", mb / 1000)
+}
+
 /// ISO-3166 alpha-2 country code → flag emoji (e.g. "VN" → 🇻🇳) by mapping each letter to its
 /// regional-indicator symbol. Returns "" for anything that isn't two letters.
 func flagEmoji(_ code: String) -> String {

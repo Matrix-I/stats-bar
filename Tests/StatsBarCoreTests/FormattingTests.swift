@@ -187,6 +187,47 @@ struct FormattingTests {
         #expect(healthColor(percent) == expected)
     }
 
+    // MARK: menuBarRate — the formatter the earlier sweep could not see
+
+    @Test("menuBarRate promotes before the printed figure reaches four digits", arguments: [
+        (999.4, "999 B/s"),      // last value that still prints in bytes
+        (999.5, "1 KB/s"),       // half a printed digit later, and it must have promoted
+        (999_499.0, "999 KB/s"),
+        (999_500.0, "1.0 MB/s"),
+        (999_949_999.0, "999.9 MB/s"),
+        (999_950_000.0, "1.0 GB/s"),
+    ])
+    func menuBarRateBoundaries(input: Double, expected: String) {
+        // These six are the whole point of moving this function into Core. Each pair straddles the
+        // threshold where the OLD code — which compared against a flat 1000 after choosing the band —
+        // printed "1000 B/s", "1000 KB/s" and "1000.0 MB/s": a four-digit figure in a unit its own
+        // banding says should have become the next one up. The value below each boundary has to keep
+        // its unit, or the fix has merely moved the fault one band down.
+        #expect(menuBarRate(input) == expected)
+    }
+
+    @Test("menuBarRate keeps the ordinary readings unchanged", arguments: [
+        (0.0, "0 B/s"),
+        (512.0, "512 B/s"),
+        (1000.0, "1 KB/s"),
+        (58_500_000.0, "58.5 MB/s"),
+        (2_400_000_000.0, "2.4 GB/s"),
+    ])
+    func menuBarRateOrdinaryValues(input: Double, expected: String) {
+        // The threshold move must not shift anything a person actually sees. This is a menu-bar label
+        // that is on screen permanently, so a change of unit or precision in the normal range would be
+        // far more noticeable than the edge case being fixed.
+        #expect(menuBarRate(input) == expected)
+    }
+
+    @Test("menuBarRate clamps a negative rate rather than printing a minus sign")
+    func menuBarRateClampsNegative() {
+        // A counter that wrapped or an interface that reset can hand the tracker a negative delta. In
+        // the menu bar a "-2 KB/s" reads as a direction, not an error.
+        #expect(menuBarRate(-1) == "0 B/s")
+        #expect(menuBarRate(-1e9) == "0 B/s")
+    }
+
     // MARK: roundedInt — the conversion that used to be a crash
 
     @Test("roundedInt rounds half away from zero, like the Int(v.rounded()) it replaced", arguments: [
