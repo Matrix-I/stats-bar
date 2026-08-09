@@ -62,7 +62,7 @@ private struct DisplayRow: View {
     private var caption: String? {
         var parts: [String] = []
         if let native = display.nativeText { parts.append(native) }
-        if let hz = display.refreshHz { parts.append("\(Int(hz.rounded())) Hz") }
+        if let hz = display.refreshHz { parts.append("\(roundedInt(hz)) Hz") }
         if let inches = display.diagonalInches { parts.append(String(format: "%.1f\"", inches)) }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }

@@ -186,4 +186,61 @@ struct FormattingTests {
     func healthColorThresholds(percent: Double, expected: Color) {
         #expect(healthColor(percent) == expected)
     }
+
+    // MARK: roundedInt — the conversion that used to be a crash
+
+    @Test("roundedInt rounds half away from zero, like the Int(v.rounded()) it replaced", arguments: [
+        (0.0, 0), (0.4, 0), (0.5, 1), (1.5, 2), (2334.4, 2334), (2334.5, 2335),
+        (-0.5, -1), (-1.4, -1), (-1.5, -2),
+    ])
+    func roundedIntMatchesTheOldRounding(input: Double, expected: Int) {
+        // The point of the replacement was to stop it TRAPPING, not to change what it prints, so the
+        // ordinary cases have to keep giving the same answers a bare Int(v.rounded()) gave — including
+        // .toNearestOrAwayFromZero at the halves, which is `rounded()`'s default and not banker's
+        // rounding. A guard that quietly shifted every reading by one would be a worse bug than the
+        // crash it fixed, and nothing on screen would look wrong.
+        #expect(roundedInt(input) == expected)
+    }
+
+    @Test("roundedInt survives the values that halt the process", arguments: [
+        Double.nan, .signalingNaN, .infinity, -.infinity,
+        1e300, -1e300, .greatestFiniteMagnitude, -.greatestFiniteMagnitude,
+        9_223_372_036_854_775_808.0,      // exactly 2^63: Double(Int.max) rounded up, so `v < Double(Int.max)` admits it
+        -9_223_372_036_854_775_809.0,
+    ])
+    func roundedIntSaturatesInsteadOfTrapping(input: Double) {
+        // Every argument here CRASHES `Int(input.rounded())` outright — this is not a test that some
+        // number comes out prettier. It is why the app can read an SMC key whose four bytes happen to
+        // be a NaN pattern, or a throughput rate divided by an elapsed time that rounded to nothing,
+        // and print something wrong instead of terminating on the next popover open.
+        //
+        // A swift-testing #expect cannot catch a trap: the process dies and the run reports nothing at
+        // all. So the assertion is simply that control reaches the next line, and the failure mode of
+        // a regression here is a suite that dies rather than one that goes red. Worth knowing when
+        // this file next fails in an unfamiliar way.
+        let out = roundedInt(input)
+        #expect(out >= Int.min && out <= Int.max)
+    }
+
+    @Test("roundedInt saturates towards the sign it came from")
+    func roundedIntSaturatesWithSign() {
+        // Direction matters and is the part a careless rewrite gets wrong: returning Int.max for a
+        // hugely NEGATIVE reading would turn an obviously broken sensor into a plausible-looking
+        // maximum. Non-finite input has no sign to honour, so it lands on zero.
+        #expect(roundedInt(1e300) == Int.max)
+        #expect(roundedInt(-1e300) == Int.min)
+        #expect(roundedInt(.nan) == 0)
+        #expect(roundedInt(.infinity) == Int.max)
+        #expect(roundedInt(-.infinity) == Int.min)
+    }
+
+    @Test("roundedInt keeps the largest values that genuinely fit")
+    func roundedIntKeepsRepresentableExtremes() {
+        // The boundary the saturation must not overshoot: 2^63 − 1024 is the largest Double below
+        // Int.max, and it converts exactly. Clamping it away would be a silent off-by-a-lot on the one
+        // input that did not need clamping.
+        let largestExact = 9_223_372_036_854_774_784.0   // 2^63 − 1024
+        #expect(roundedInt(largestExact) == Int(largestExact))
+        #expect(roundedInt(-largestExact) == Int(-largestExact))
+    }
 }

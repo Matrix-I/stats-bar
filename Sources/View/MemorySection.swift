@@ -108,7 +108,7 @@ struct MemoryDetailView: View {
             RingGauge(segments: [
                 .init(value: info.usedFraction, color: usageColor(info.usagePercent)),
             ]) {
-                Text("\(Int(info.usagePercent.rounded()))%")
+                Text("\(roundedInt(info.usagePercent))%")
                     .font(.system(size: 22, weight: .semibold))
                     .monospacedDigit()
             }

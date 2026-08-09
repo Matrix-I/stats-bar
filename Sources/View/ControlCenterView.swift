@@ -202,7 +202,7 @@ struct ControlCenterView: View {
         return n == 0 ? "None" : "\(n) device\(n == 1 ? "" : "s")"
     }
 
-    private func pct(_ v: Double) -> Int { Int(v.rounded()) }
+    private func pct(_ v: Double) -> Int { roundedInt(v) }
 
     /// Usage ramp shared with the CPU/RAM tabs: green under 70%, orange under 85%, red above.
     private func usageTint(_ p: Double) -> Color { p < 70 ? .green : (p < 85 ? .orange : .red) }

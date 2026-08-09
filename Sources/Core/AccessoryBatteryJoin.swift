@@ -44,7 +44,7 @@ struct AccessoryBattery: Equatable {
     /// display as 99.
     static func percent(current: Int, maxCapacity: Int) -> Int? {
         guard current >= 0, maxCapacity > 0 else { return nil }
-        let pct = Int((Double(current) / Double(maxCapacity) * 100).rounded())
+        let pct = roundedInt(Double(current) / Double(maxCapacity) * 100)
         return min(100, max(0, pct))
     }
 

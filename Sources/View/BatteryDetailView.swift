@@ -247,7 +247,7 @@ struct BatteryDetailView: View {
                 if let used = i.cycleLifeFraction {
                     // The count on its own says nothing; against the pack's rated life it does.
                     InfoRow(label: "Cycle count",
-                            value: "\(i.cycleCount) / \(i.designCycleCount) (\(Int((used * 100).rounded()))%)")
+                            value: "\(i.cycleCount) / \(i.designCycleCount) (\(roundedInt(used * 100))%)")
                 } else {
                     InfoRow(label: "Cycle count", value: "\(i.cycleCount)")
                 }
@@ -614,7 +614,7 @@ private struct FanRow: View {
     let showIndex: Bool
 
     private var label: String { showIndex ? "Fan \(fan.index + 1)" : "Fan" }
-    private func rpm(_ v: Double) -> String { "\(Int(v.rounded())) rpm" }
+    private func rpm(_ v: Double) -> String { "\(roundedInt(v)) rpm" }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -623,7 +623,7 @@ private struct FanRow: View {
             if let frac = fan.rangeFraction, let lo = fan.minimum, let hi = fan.maximum {
                 BarView(pct: frac * 100, color: barColor(frac))
                 HStack(spacing: 4) {
-                    Text("\(Int(lo.rounded()))–\(Int(hi.rounded())) rpm · \(Int((frac * 100).rounded()))%")
+                    Text("\(roundedInt(lo))–\(roundedInt(hi)) rpm · \(roundedInt(frac * 100))%")
                     if fan.isRamping, let t = fan.target {
                         // Only worth the pixels while the controller and the fan disagree.
                         Text("· → \(rpm(t))").foregroundStyle(fan.actual < t ? .orange : .secondary)

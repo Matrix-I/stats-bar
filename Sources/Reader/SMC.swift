@@ -109,7 +109,18 @@ final class SMC {
         var readIn = Param(); readIn.key = k; readIn.keyInfo = keyInfo; readIn.data8 = Self.readBytes
         var readOut = Param()
         guard call(&readIn, &readOut), readOut.result == 0 else { return nil }
-        return decode(readOut, as: keyInfo)
+        // A non-finite result is not a reading, so it leaves here the same way a missing key does.
+        //
+        // Only `flt ` can produce one: decode reinterprets four bytes as a Float32, and every bit
+        // pattern is a legal Float — including the NaNs and infinities. `sp78` and the single-byte
+        // types are bounded by construction. What made that worth a guard is where the value goes
+        // next: the fan and temperature rows print it with Int(v.rounded()), and Int(NaN) TRAPS under
+        // the -O the app ships. So a fan key that reads back garbage did not show a wrong RPM, it
+        // took the app down on the next popover open, and it would have done so on a machine nobody
+        // here has rather than this one. Callers already handle nil — readFans skips the fan,
+        // readFloat's optional chain hides the row — so refusing costs a row and saves the process.
+        guard let value = decode(readOut, as: keyInfo), value.isFinite else { return nil }
+        return value
     }
 
     /// Whether this reader understands a key's layout: `flt ` (little-endian Float32), `sp78`

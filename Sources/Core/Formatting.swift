@@ -13,6 +13,41 @@ func healthColor(_ p: Double) -> Color {
     p >= 80 ? .green : (p >= 60 ? .orange : .red)
 }
 
+/// A measured Double → the Int a label prints.
+///
+/// Not a convenience. `Int(someDouble)` is a TRAPPING conversion, not a saturating one: it halts the
+/// process on NaN, on ±infinity and on any magnitude past Int64's range. build_app.sh ships -O rather
+/// than -Ounchecked, so that precondition is in the release binary, and `Int(v.rounded())` written
+/// inline — which is how all fourteen of these sites used to read — is a crash rather than a silly
+/// number. The same distinction CLAUDE.md draws about unsigned `-`, in the other direction.
+///
+/// Reachable because the values are sensor readings. The SMC decodes a `flt ` key by reinterpreting
+/// four bytes as a Float32 (SMC.decode), so any key whose bytes are not a fan speed — a fan index the
+/// machine does not have, a controller mid-reset, a key that means something else on another chip —
+/// yields NaN or an exponent no RPM has. SMC.readFloat now refuses non-finite readings at the source,
+/// which is the real fix; this is the second line, and it also covers the values that reach a view
+/// from IOKit and CoreGraphics without passing through the SMC at all.
+///
+/// Applied at every such site rather than only the ones whose input is currently unprovable, because
+/// the alternative is a reader re-deriving "can this divide by zero?" per call site, and getting it
+/// right fourteen times running. Saturating rather than optional for the same reason: these are all
+/// display sites, and an absurd number is visibly absurd and gets reported, while a row that quietly
+/// vanishes looks like a Mac without that sensor.
+func roundedInt(_ v: Double) -> Int {
+    // NaN is the only input with no sign to honour, so it is the only one that lands on zero.
+    // Infinity deliberately does NOT: it saturates like any other over-range value, because a fan row
+    // reading 9223372036854775807 rpm is self-evidently a broken sensor, while the same row reading
+    // "0 rpm" is a perfectly ordinary thing for a fan to do and nobody would ever report it.
+    guard !v.isNaN else { return 0 }
+    let r = v.rounded()
+    // After rounding, `Int(exactly:)` can only fail for being out of range, so the sign picks the end
+    // to saturate to. Written this way rather than comparing against Double(Int.max), which is not
+    // representable as a Double and rounds UP to 2^63 — so the obvious `v < Double(Int.max)` admits
+    // exactly the one value that still traps.
+    if let exact = Int(exactly: r) { return exact }
+    return r < 0 ? Int.min : Int.max
+}
+
 /// Minutes → "1h 05m" for the battery time-remaining rows. Clamped at zero, like fmtUptime: the two
 /// call sites in BatteryDetailView already filter to 1..<65535, so this is defence for the next caller
 /// rather than a live fix — but IOKit's time-to-full can read negative while its estimate settles, and
@@ -65,8 +100,12 @@ func fmtBytes(_ bytes: UInt64) -> String {
 }
 
 /// Bytes-per-second → "1.2 MB/s" for the live throughput rows.
+///
+/// `UInt64(someDouble)` traps exactly as `Int(someDouble)` does, and the rate is a byte delta divided
+/// by an elapsed time this code does not control — so the one input that produces an impossible
+/// magnitude is a sampling interval that rounds to almost nothing. roundedInt saturates instead.
 func fmtRate(_ bytesPerSec: Double) -> String {
-    fmtBytes(UInt64(max(0, bytesPerSec))) + "/s"
+    fmtBytes(UInt64(max(0, roundedInt(bytesPerSec)))) + "/s"
 }
 
 /// Splits a bytes/sec rate into a big number and its unit ("2" + "KB/s") for the prominent
@@ -82,9 +121,9 @@ func fmtRateParts(_ bytesPerSec: Double) -> (value: String, unit: String) {
     while value >= promoteAbove && i < units.count - 1 { value /= 1000; i += 1 }
     let valueStr: String
     switch i {
-    case 0, 1: valueStr = String(Int(value.rounded()))                        // B/s, KB/s → whole
+    case 0, 1: valueStr = String(roundedInt(value))                        // B/s, KB/s → whole
     default:   valueStr = value < 10 ? String(format: "%.1f", value)          // small MB/s+ → 1 dp
-                                     : String(Int(value.rounded()))
+                                     : String(roundedInt(value))
     }
     return (valueStr, units[i])
 }

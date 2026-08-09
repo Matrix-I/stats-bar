@@ -139,13 +139,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         addMetric(.cpu, key: "showCPUItem",
                   root: CPUDetailView(reader: cpuReader),
                   glyph: { [weak self] in self.map { s in
-                      let pct = Int(s.cpuReader.info.usagePercent.rounded())
+                      let pct = roundedInt(s.cpuReader.info.usagePercent)
                       return ("\(pct)", { symbolPercentMenuBarImage(symbol: "cpu", percent: pct) })
                   } })
         addMetric(.memory, key: "showMemoryItem",
                   root: MemoryDetailView(reader: memoryReader),
                   glyph: { [weak self] in self.map { s in
-                      let pct = Int(s.memoryReader.info.usagePercent.rounded())
+                      let pct = roundedInt(s.memoryReader.info.usagePercent)
                       return ("\(pct)", { symbolPercentMenuBarImage(symbol: "memorychip", percent: pct) })
                   } })
         addMetric(.network, key: "showNetworkItem",
@@ -330,11 +330,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch metric {
         case .battery:
             let info = batteryReader.info
-            return "Battery \(Int(info.chargePercent.rounded()))%" + (info.isPluggedIn ? ", charging" : "")
+            return "Battery \(roundedInt(info.chargePercent))%" + (info.isPluggedIn ? ", charging" : "")
         case .cpu:
-            return "CPU \(Int(cpuReader.info.usagePercent.rounded()))%"
+            return "CPU \(roundedInt(cpuReader.info.usagePercent))%"
         case .memory:
-            return "Memory \(Int(memoryReader.info.usagePercent.rounded()))%"
+            return "Memory \(roundedInt(memoryReader.info.usagePercent))%"
         case .network:
             let info = networkReader.info
             return "Network up \(menuBarRate(info.uploadRate)), down \(menuBarRate(info.downloadRate))"
@@ -365,11 +365,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let showIPhone = showIPhoneMenuBar
         let showAndroid = showAndroidMenuBar
         let info = batteryReader.info
-        let macPct = Int(info.chargePercent.rounded())
+        let macPct = roundedInt(info.chargePercent)
         let pct = showPercent ? 1 : 0
 
         if showIPhone, let ios = iosReader.devices.first, let cp = ios.chargePercent {
-            let phonePct = Int(cp.rounded())
+            let phonePct = roundedInt(cp)
             let key = "ios|\(pct)|\(macPct)|\(info.isPluggedIn ? 1 : 0)|\(phonePct)|\(ios.isPluggedIn ? 1 : 0)"
             return (key, {
                 dualMenuBarImage(macPct: macPct, macCharging: info.isPluggedIn,

@@ -94,7 +94,7 @@ struct CPUDetailView: View {
                 .init(value: info.systemPercent / 100, color: CPUPalette.system),
                 .init(value: info.userPercent / 100, color: CPUPalette.user),
             ]) {
-                Text("\(Int(info.usagePercent.rounded()))%")
+                Text("\(roundedInt(info.usagePercent))%")
                     .font(.system(size: 22, weight: .semibold))
                     .monospacedDigit()
             }
@@ -111,7 +111,7 @@ struct CPUDetailView: View {
             ]) {
                 Group {
                     if let t = info.temperatureC {
-                        Text("\(Int(t.rounded()))°")
+                        Text("\(roundedInt(t))°")
                             .font(.system(size: 22, weight: .semibold))
                             .monospacedDigit()
                     } else {
@@ -222,13 +222,13 @@ struct CPUDetailView: View {
                     ForEach(Array(info.perCoreBusy.enumerated()), id: \.offset) { idx, busy in
                         VStack(spacing: 3) {
                             if idx < temps.count {
-                                Text("\(Int(temps[idx].rounded()))°")
+                                Text("\(roundedInt(temps[idx]))°")
                                     .font(.system(size: 9))
                                     .monospacedDigit()
                                     .foregroundStyle(coreTempColor(temps[idx]))
                             }
                             BarView(pct: busy, color: coreColor(idx))
-                            Text("\(Int(busy.rounded()))%")
+                            Text("\(roundedInt(busy))%")
                                 .font(.system(size: 9))
                                 .monospacedDigit()
                                 .foregroundStyle(.secondary)
@@ -239,7 +239,7 @@ struct CPUDetailView: View {
                     // Say so rather than quietly dropping them: the hottest zone on the die may be one
                     // of the ones with no cell, and that is the number a throttling machine is
                     // throttling on.
-                    Text("\(temps.count) die zones · hottest \(Int((temps.max() ?? 0).rounded()))°")
+                    Text("\(temps.count) die zones · hottest \(roundedInt(temps.max() ?? 0))°")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -279,7 +279,7 @@ struct CPUDetailView: View {
         }
     }
 
-    private func mhz(_ v: Double) -> String { "\(Int(v.rounded())) MHz" }
+    private func mhz(_ v: Double) -> String { "\(roundedInt(v)) MHz" }
 
     // MARK: Top processes
 
