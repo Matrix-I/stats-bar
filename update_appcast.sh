@@ -103,6 +103,31 @@ if grep -q "<sparkle:version>$VERSION</sparkle:version>" "$APPCAST"; then
     fail "$APPCAST already has an item for $VERSION"
 fi
 
+# ...and publishing one OLDER than the feed's newest item is the same operator error one step further
+# on, which the check above cannot see because that version has never been in the file. The realistic
+# shape is a hotfix cut off an older branch — 2.11.2 built while main is at 2.12.2.
+#
+# The splice below is unconditional: it goes directly under the APPCAST_ITEMS marker, so the feed's
+# newest-LISTED item ends up being an old release while this script prints its success line and tells
+# the operator to push. Sparkle itself is not fooled — SUAppcastDriver picks the HIGHEST sparkle:version
+# rather than the first item, verified against the shipped Sparkle 2.9.4 by handing it a deliberately
+# ascending feed — so no user is ever offered a downgrade. The damage is that the release reaches
+# nobody while looking published, and nothing downstream will ever say otherwise: CI does not read this
+# file and no tag covers the commit that adds an item.
+#
+# Compared as zero-padded numeric fields rather than as strings, which also closes a hole the duplicate
+# check above leaves open: "2.12" and "2.12.0" are different strings, so grep sees no duplicate, while
+# Sparkle's own comparator reports them equal — exactly the two-items-Sparkle-picks-between state that
+# check exists to prevent.
+version_key() {
+    printf '%s' "$1" | awk -F. '{ printf "%05d%05d%05d", $1, $2, $3 }'
+}
+NEWEST="$(sed -n 's/.*<sparkle:version>\(.*\)<\/sparkle:version>.*/\1/p' "$APPCAST" \
+          | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)"
+if [ -n "$NEWEST" ] && [ "$(version_key "$VERSION")" -le "$(version_key "$NEWEST")" ]; then
+    fail "$VERSION is not newer than $NEWEST, the newest version already in $APPCAST — Sparkle offers the highest version in the feed, so this item would reach nobody"
+fi
+
 # ── 2. Sign, with the strongest key check the signing source allows ───────────────────────────────────
 # sign_update prints e.g.  sparkle:edSignature="BASE64==" length="1246073"
 # By default the private key is read from this machine's keychain — the FIRST run shows a one-time

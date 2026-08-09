@@ -43,6 +43,28 @@ SHORT_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' 
 BUNDLE_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST")"
 DMG="$APP-v$SHORT_VERSION.dmg"
 
+# The only relation between the two keys that is ever correct: CFBundleVersion is the short version with
+# any -SNAPSHOT stripped. Stripped rather than exempted, because a snapshot whose CFBundleVersion has
+# quietly drifted is the state that CAUSES the failure, and exempting snapshots would leave it
+# unexamined until the cut — the exact moment this check exists to be earlier than.
+#
+# update_appcast.sh asserts the same thing and keeps doing so; it reads the bundle inside the DMG, which
+# need not be the one this run built. But that is step 5 of the release, AFTER `gh release create` has
+# published the tag, the release page and the asset. Failing there means deleting a published release
+# from an account only one person can write to. Failing here costs one line and a rebuild.
+#
+# Reachable because a fixes-only cut changes the NUMBER, not just the suffix: ee29c9a took
+# 2.12.0-SNAPSHOT straight to 2.11.1 and a41ad97 took 2.13.0-SNAPSHOT to 2.12.2, both two-line edits,
+# while the comment in build_app.sh says to "drop the suffix here" — singular, and true only for the
+# release that keeps the number its snapshot already named.
+if [ "${SHORT_VERSION%-SNAPSHOT}" != "$BUNDLE_VERSION" ]; then
+    echo "❌ CFBundleVersion ($BUNDLE_VERSION) does not match CFBundleShortVersionString ($SHORT_VERSION)." >&2
+    echo "   Sparkle compares CFBundleVersion, so publishing this burns the number the next release" >&2
+    echo "   wants: that release would never be offered to anyone who installed this one." >&2
+    echo "   Set BOTH keys in build_app.sh to the release number and rebuild." >&2
+    exit 1
+fi
+
 # A -SNAPSHOT build is packaged on purpose — that is how a DMG gets tested before a release is cut — but
 # it must never reach the feed. Saying so here is cheap; update_appcast.sh is what actually refuses it,
 # because that is the step with consequences for everyone else.
@@ -72,11 +94,43 @@ codesign --verify --deep --strict "$APP.app"
 # close by announcing "the app is ad-hoc signed" unconditionally, and that was false for v2.12.0, which
 # shipped Authority=StatsBar Local — so the release script told the operator the opposite of what it had
 # just produced, which is a large part of why that change went a whole release unnoticed.
-if codesign -dvvv "$APP.app" 2>&1 | grep -q "Signature=adhoc"; then
-    SIGNED_AS="ad-hoc"
-else
-    SIGNED_AS="$(codesign -dvvv "$APP.app" 2>&1 | sed -n 's/^Authority=//p' | head -1)"
-    [ -n "$SIGNED_AS" ] || SIGNED_AS="unknown identity"
+#
+# Read once into a variable and match on that, rather than piping into `grep -q`. Under `set -o pipefail`
+# grep -q exits at its first match, codesign dies of SIGPIPE, and 141 becomes the pipeline's status — so
+# for an AD-HOC bundle the ad-hoc branch was sometimes not taken at all, and the summary below reported
+# "unknown identity" for a bundle it had just described correctly on the previous run. Measured at
+# roughly one run in ten. The race is one-directional: with a real identity grep matches nothing, drains
+# the output and never signals, so it misfired only in the direction that hides the problem.
+SIGN_INFO="$(codesign -dvvv "$APP.app" 2>&1)"
+case "$SIGN_INFO" in
+    *"Signature=adhoc"*) SIGNED_AS="ad-hoc" ;;
+    *) SIGNED_AS="$(printf '%s\n' "$SIGN_INFO" | sed -n 's/^Authority=//p' | head -1)"
+       [ -n "$SIGNED_AS" ] || SIGNED_AS="unknown identity" ;;
+esac
+
+# Refuse to package an ad-hoc build for release. The signing identity IS the TCC designated requirement,
+# and an ad-hoc one is the binary's own cdhash — so shipping it resets Location and Bluetooth for every
+# user already on v2.11.1 or later, who then lose the Wi-Fi network name and their accessory battery
+# levels until each of them re-grants by hand. There is no way to push that back from this end.
+#
+# Nothing downstream would have caught it: `codesign --verify` passes on an ad-hoc signature by design —
+# that is what it is for — and update_appcast.sh never looks at the identity at all. CLAUDE.md records
+# that this already happened once in the other direction, the identity moving from ad-hoc to StatsBar
+# Local at v2.11.1 with nobody noticing for two releases.
+#
+# The gate belongs HERE and deliberately not in build_app.sh: a contributor without the certificate must
+# still be able to build and run the app. They simply cannot cut a release with it. The override exists
+# for the one legitimate case, a maintainer who has genuinely lost the certificate and accepts what it
+# costs their users, and it has to be typed out in full so it cannot happen by accident.
+if [ "$SIGNED_AS" = "ad-hoc" ] && [ "${STATSBAR_ALLOW_ADHOC_DMG:-0}" != "1" ]; then
+    echo "❌ $APP.app is ad-hoc signed — refusing to package a release DMG." >&2
+    echo "   The identity is the TCC designated requirement, so this would reset Location and" >&2
+    echo "   Bluetooth permissions for every user on v2.11.1 or later, each of whom would have to" >&2
+    echo "   grant them again by hand." >&2
+    echo "   Fix: create the 'StatsBar Local' certificate (see build_app.sh's signing header), or set" >&2
+    echo "   STATSBAR_SIGN_IDENTITY to one that exists. To ship ad-hoc anyway, knowing the above:" >&2
+    echo "   STATSBAR_ALLOW_ADHOC_DMG=1 ./build_dmg.sh" >&2
+    exit 1
 fi
 
 # 4. Stage the disk-image contents: the app + a drag-to-install shortcut to /Applications
