@@ -211,7 +211,11 @@ final class SMC {
     /// probe remains as the fallback for a chip that doesn't publish FNum.
     func readFans() -> [FanInfo] {
         guard isAvailable else { return [] }
-        let declared = readFloat("FNum").map(Int.init)
+        // roundedInt rather than Int.init: FNum is `ui8 ` on every Mac measured here, so it arrives as
+        // 0...255 and the clamp below is what bounds the loop — but the clamp runs AFTER the
+        // conversion, and Int.init is the trapping one. A chip that published FNum as `flt ` would
+        // therefore crash on the line that exists to make the count safe.
+        let declared = readFloat("FNum").map(roundedInt)
         let ceiling = declared.map { max(0, min($0, 64)) } ?? 10
         var fans: [FanInfo] = []
         for n in 0..<ceiling {

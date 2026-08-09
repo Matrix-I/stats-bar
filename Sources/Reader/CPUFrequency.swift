@@ -125,7 +125,14 @@ final class CPUFrequency {
             let isPerf = name.hasPrefix("PCPU")
             guard isEff || isPerf else { return 0 }
             let table = isEff ? eTable : pTable
-            let count = stateCount(ch)
+            // max(0,) because this is a private symbol dlsym'd out of libIOReport, declared in no
+            // header, and it returns a SIGNED Int32 — which is how a C API says "I can fail". Handing
+            // a negative straight to `0..<count` fails Range's lowerBound <= upperBound precondition,
+            // and that precondition is a trap: the app dies rather than skipping the channel. The
+            // whole file is already written on the premise that this interface may withdraw at any
+            // macOS release — every symbol is optional and every miss degrades to nil — so accepting
+            // its return value unexamined was the one place that premise was not honoured.
+            let count = max(0, stateCount(ch))
             for i in 0..<count {
                 let sn = stateName(ch, i)?.takeUnretainedValue() as String? ?? ""
                 guard let idx = Self.dvfsIndex(sn), idx < table.count else { continue }  // skips IDLE/OFF/DOWN
