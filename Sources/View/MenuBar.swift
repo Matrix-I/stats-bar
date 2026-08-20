@@ -41,14 +41,20 @@ func batteryMenuBarImage(level: Double, charging: Bool, percent: Int? = nil) -> 
         let font = NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .semibold)
         let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.black]
         let textSize = text.size(withAttributes: attrs)
-        let labelW = ceil(textSize.width)
+        // Kept as wide as "100%" and right-aligned below, so the item's width — and the anchor every
+        // open popover is positioned from — does not move as the charge crosses 9% → 10% → 100%. See
+        // networkMenuBarImage for why that matters and what it was measured at. dualMenuBarImage
+        // composes two of these, so it inherits the fixed width rather than needing its own.
+        let labelW = max(ceil(("100%" as NSString).size(withAttributes: attrs).width), ceil(textSize.width))
         let gap: CGFloat = 3
         let bodyW: CGFloat = 21.4                 // battery body width (glyph only)
         let w = labelW + gap + bodyW + 3.6        // + terminal nub
 
         let img = NSImage(size: NSSize(width: w, height: h), flipped: false) { _ in
-            // Percentage label on the left, vertically centred.
-            text.draw(at: NSPoint(x: 0, y: (h - textSize.height) / 2 + 0.3), withAttributes: attrs)
+            // Percentage label on the left, vertically centred, right-aligned within labelW so its
+            // right edge stays a fixed distance from the battery body as the digit count changes.
+            text.draw(at: NSPoint(x: labelW - ceil(textSize.width), y: (h - textSize.height) / 2 + 0.3),
+                      withAttributes: attrs)
 
             // Battery glyph to the right of the label.
             let bx = labelW + gap
@@ -104,11 +110,17 @@ func batteryMenuBarImage(level: Double, charging: Bool, percent: Int? = nil) -> 
 /// single NSImage (right-aligned, two lines). Baking it — rather than a SwiftUI VStack — gives a
 /// compact, predictable two-line layout.
 ///
-/// The canvas is sized to the actual two lines so the item sits snug against its content, like the
-/// CPU/RAM items — no reserved slack for a hypothetical maximum rate. Monospaced digits keep the two
-/// lines aligned and mean the width only shifts when the rate's digit-count changes (e.g. "9 KB/s" →
-/// "12 KB/s"), not on every update. The two lines right-align, so the shorter one's right edge lines
-/// up with the other.
+/// The canvas reserves a FIXED width — menuBarRateWidestSample plus the arrow — instead of hugging
+/// the current reading. It used to hug it, and the comment here described the consequence without
+/// drawing it: "the width only shifts when the rate's digit-count changes". A variableLength
+/// NSStatusItem is exactly as wide as the image handed to it, and every popover in this app is shown
+/// relative to a status-item button, which NSPopover goes on following for as long as it is open. So
+/// each digit-count change moved the button and the open popover jumped with it — measured at 37 pt
+/// of horizontal travel for the 31 → 58 pt swing this glyph had between "0 B/s" and "999.0 MB/s".
+///
+/// A constant width costs a few points of menu bar that idle readings leave blank, and buys a popover
+/// that holds still plus a menu bar whose other items stop sliding once a second. The two lines stay
+/// right-aligned, so the reserved slack opens on the left and the digits themselves never move.
 ///
 /// The up arrow is red and the down arrow blue, matching the Total upload / download markers in the
 /// popover. A coloured menu-bar image can't be a template (templates render monochrome), so the
@@ -132,9 +144,11 @@ func networkMenuBarImage(up: Double, down: Double) -> NSImage {
     let upLine = line(arrow: "↑", arrowColor: .systemRed, rate: menuBarRate(up))
     let downLine = line(arrow: "↓", arrowColor: .systemBlue, rate: menuBarRate(down))
     let lineH = ceil(max(upLine.size().height, downLine.size().height))
-    // Snug width: just the wider of the two actual lines, so the item hugs its content instead of
-    // reserving space for a maximum rate that never shows.
-    let w = ceil(max(upLine.size().width, downLine.size().width))
+    // Reserved width, measured from the sample rather than hardcoded, so it tracks both the font and
+    // any change to menuBarRate's banding. max() and not a clamp: an over-range reading still renders
+    // in full and widens the item, which is the right trade at a rate no physical link reaches.
+    let reserved = ceil(line(arrow: "↑", arrowColor: .systemRed, rate: menuBarRateWidestSample).size().width)
+    let w = max(reserved, ceil(max(upLine.size().width, downLine.size().width)))
     let h = lineH * 2
 
     let img = NSImage(size: NSSize(width: max(w, 1), height: h), flipped: false) { _ in
@@ -150,9 +164,11 @@ func networkMenuBarImage(up: Double, down: Double) -> NSImage {
 
 /// A menu-bar glyph made of an SF Symbol followed by a live percentage, baked into a single
 /// **template** image (so the system tints it white-on-dark / black-on-light like the battery glyph).
-/// Shared by the CPU (`cpu`) and RAM (`memorychip`) items. Monospaced digits and a fixed layout keep
-/// the item from jittering as the number changes width. The colour set on the text is ignored for a
-/// template — only its alpha matters.
+/// Shared by the CPU (`cpu`) and RAM (`memorychip`) items. The number sits in a field kept as wide as
+/// "100%" and is right-aligned in it, so the item's width does not change at 9% → 10% → 100% (it used
+/// to step 34.8 → 41.8 → 48.8 pt). That is not cosmetic: this item is a popover anchor, and NSPopover
+/// follows the button it was shown from — see networkMenuBarImage for the measurement. The colour set
+/// on the text is ignored for a template — only its alpha matters.
 @MainActor
 func symbolPercentMenuBarImage(symbol: String, percent: Int) -> NSImage {
     let h: CGFloat = 13, symH: CGFloat = 12
@@ -165,12 +181,20 @@ func symbolPercentMenuBarImage(symbol: String, percent: Int) -> NSImage {
     sym?.isTemplate = true
     let symW = sym.map { symH * ($0.size.width / max($0.size.height, 1)) } ?? 0
     let gap: CGFloat = 3
-    let w = symW + gap + ceil(textSize.width)
+    // A percentage cannot print wider than "100%", so that measurement is the field — no max() escape
+    // hatch is needed here the way it is for an open-ended byte rate. It stays a max() anyway because
+    // `percent` is an Int from roundedInt, which saturates rather than trapping and so can arrive
+    // absurd from a bad sensor read; a clipped glyph would hide exactly that.
+    let field = max(ceil(("100%" as NSString).size(withAttributes: attrs).width), ceil(textSize.width))
+    let w = symW + gap + field
 
     let img = NSImage(size: NSSize(width: max(w, 1), height: h), flipped: false) { _ in
         sym?.draw(in: NSRect(x: 0, y: (h - symH) / 2, width: symW, height: symH),
                   from: .zero, operation: .sourceOver, fraction: 1)
-        text.draw(at: NSPoint(x: symW + gap, y: (h - textSize.height) / 2 + 0.3), withAttributes: attrs)
+        // Right-aligned in the field, so the digits end on a fixed edge instead of the symbol-to-digit
+        // gap staying fixed and the whole number sliding.
+        text.draw(at: NSPoint(x: symW + gap + field - ceil(textSize.width),
+                              y: (h - textSize.height) / 2 + 0.3), withAttributes: attrs)
         return true
     }
     img.isTemplate = true

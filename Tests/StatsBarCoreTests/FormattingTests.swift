@@ -243,6 +243,35 @@ struct FormattingTests {
         #expect(menuBarRate(-1e9) == "0 B/s")
     }
 
+    // MARK: menuBarRateWidestSample — the field the network glyph reserves
+
+    @Test("no reachable rate prints wider than the field the menu bar reserves for it")
+    func menuBarRateFitsItsReservedField() {
+        // networkMenuBarImage sizes its canvas from menuBarRateWidestSample and never re-measures
+        // against the real output, so a formatter change that grows one band by a character starts
+        // clipping the glyph — silently, because nothing in the drawing code compares the two. This is
+        // the comparison. Both sides of every band promotion, since that is where a printed figure
+        // gains a digit: 999.4 stays in B/s while 999.5 promotes, and likewise at 999_499 / 999_500
+        // and at 999.94 MB/s / 999.95 MB/s.
+        let sweep: [Double] = [0, 1, 8, 512, 999, 999.4, 999.5, 1_000, 12_000, 340_000, 512_000,
+                               999_499, 999_500, 1_000_000, 2_400_000, 140_000_000,
+                               999_949_999, 999_950_000, 1_000_000_000, 999_900_000_000]
+        for v in sweep {
+            #expect(menuBarRate(v).count <= menuBarRateWidestSample.count,
+                    "menuBarRate(\(v)) = \"\(menuBarRate(v))\" overflows the reserved field")
+        }
+    }
+
+    @Test("the sample is a sample, not a bound — the GB/s band is open-ended")
+    func menuBarRateOverflowsAboveATerabyte() {
+        // Pinned so menuBarRateWidestSample's own comment stays true rather than aspirational: the
+        // top band has no promotion above it, so a loopback burst does print wider and the item does
+        // widen. Deleting the max() in networkMenuBarImage in favour of a clamp would clip this
+        // instead, and a clipped reading is indistinguishable from a plausible one.
+        #expect(menuBarRate(1_000_000_000_000) == "1000.0 GB/s")
+        #expect(menuBarRate(1_000_000_000_000).count > menuBarRateWidestSample.count)
+    }
+
     // MARK: roundedInt — the conversion that used to be a crash
 
     @Test("roundedInt rounds half away from zero, like the Int(v.rounded()) it replaced", arguments: [

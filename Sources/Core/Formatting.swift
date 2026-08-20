@@ -152,6 +152,20 @@ func menuBarRate(_ bytesPerSec: Double) -> String {
     return String(format: "%.1f GB/s", mb / 1000)
 }
 
+/// The widest reading `menuBarRate` produces at any rate a physical link reaches, for sizing a
+/// fixed-width menu-bar field.
+///
+/// Four digits and a decimal point is the most the banding above can print: the B/s and KB/s bands
+/// promote at 999.5 and so top out at three digits, and the MB/s band prints one decimal. It is a
+/// *sample*, not a bound — the GB/s band is open-ended, so a loopback burst can still print
+/// "1234.5 GB/s" and overflow it. MenuBar.swift therefore treats it as a floor rather than a clamp:
+/// past a terabyte a second the item widens again, which costs a jump at a rate no cable carries.
+///
+/// It lives here, next to the formatter it describes, so the test suite can pin the two together.
+/// The width is *computed* from this string at draw time, so a formatter change that grows an output
+/// by one character would otherwise start clipping the glyph with nothing to say so.
+let menuBarRateWidestSample = "999.9 MB/s"
+
 /// CFBundleShortVersionString → what the user sees for it.
 ///
 /// A `-SNAPSHOT` build is a dev build cut from whatever line of work is currently checked out —
