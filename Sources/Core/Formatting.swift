@@ -128,10 +128,17 @@ func fmtRateParts(_ bytesPerSec: Double) -> (value: String, unit: String) {
     return (valueStr, units[i])
 }
 
-/// Short bytes/sec for the menu bar: whole numbers up to KB/s, one decimal above, so the label stays
-/// narrow enough to sit beside the other items. Not private — AppDelegate builds the network glyph's
-/// image cache key from this string, so the glyph is redrawn only when the printed text changes
-/// rather than on every sub-unit wobble.
+/// Short bytes/sec for the menu bar: whole numbers, keeping one decimal only for the single-digit
+/// MB/s and GB/s readings where it carries something ("2.4 MB/s", not "2 MB/s"). Not private —
+/// AppDelegate builds the network glyph's image cache key from this string, so the glyph is redrawn
+/// only when the printed text changes rather than on every sub-unit wobble.
+///
+/// The precision above ten is what sizes the menu-bar item, which is why it is not a free choice.
+/// networkMenuBarImage reserves a field as wide as the widest reading this can return, so that an
+/// open popover cannot be dragged sideways (the reasoning is there) — and a decimal carried all the
+/// way to "999.9 MB/s" charged 8 pt of blank menu bar at every rate, including the idle one, to show
+/// a tenth of a megabyte per second that nobody reads off a menu bar. Hence the drop at double
+/// digits: 58.5 MB/s now prints as "59 MB/s", and the item is 50 pt wide instead of 58.
 ///
 /// It lived in Sources/View/MenuBar.swift until now, which is the only interesting thing about it:
 /// the sweep that fixed exactly this defect in every formatter above never reached it, because the
@@ -140,23 +147,30 @@ func fmtRateParts(_ bytesPerSec: Double) -> (value: String, unit: String) {
 /// rows beside it had been correct for months. A formatter outside the layer the tests compile is a
 /// formatter nothing checks; that is the reason it moved rather than being patched in place.
 func menuBarRate(_ bytesPerSec: Double) -> String {
-    // 1000 minus half of the last digit each band prints, per the rule in the file header: 999.5 for
-    // the whole-number bands, 999.95 for the one-decimal one. Comparing against a flat 1000 is what
-    // let the top of a band round straight past the band it was chosen for.
+    // One decimal below ten, whole numbers above. 9.95 rather than 10 for the same reason every
+    // threshold in this file is offset: it is the decimal form being left behind, and 9.95 is where
+    // that form would print "10.0".
+    func banded(_ v: Double, _ unit: String) -> String {
+        v < 9.95 ? String(format: "%.1f %@", v, unit) : String(format: "%.0f %@", v, unit)
+    }
+    // 1000 minus half of the last digit each band prints, per the rule in the file header. Every band
+    // now tops out in whole numbers, so that is a flat 999.5 in all of them; it used to be 999.95 for
+    // MB/s, which carried a decimal the whole way up. Comparing against a flat 1000 is what let the
+    // top of a band round straight past the band it was chosen for.
     let v = max(0, bytesPerSec)
     if v < 999.5 { return String(format: "%.0f B/s", v) }
     let kb = v / 1000
     if kb < 999.5 { return String(format: "%.0f KB/s", kb) }
     let mb = kb / 1000
-    if mb < 999.95 { return String(format: "%.1f MB/s", mb) }
-    return String(format: "%.1f GB/s", mb / 1000)
+    if mb < 999.5 { return banded(mb, "MB/s") }
+    return banded(mb / 1000, "GB/s")
 }
 
 /// The widest reading `menuBarRate` produces at any rate a physical link reaches, for sizing a
 /// fixed-width menu-bar field.
 ///
-/// Four digits and a decimal point is the most the banding above can print: the B/s and KB/s bands
-/// promote at 999.5 and so top out at three digits, and the MB/s band prints one decimal. It is a
+/// Three digits is the most the banding above can print: every band promotes at 999.5, and the one
+/// decimal each band keeps below ten is narrower than the digit it replaces. It is a
 /// *sample*, not a bound — the GB/s band is open-ended, so a loopback burst can still print
 /// "1234.5 GB/s" and overflow it. MenuBar.swift therefore treats it as a floor rather than a clamp:
 /// past a terabyte a second the item widens again, which costs a jump at a rate no cable carries.
@@ -164,7 +178,7 @@ func menuBarRate(_ bytesPerSec: Double) -> String {
 /// It lives here, next to the formatter it describes, so the test suite can pin the two together.
 /// The width is *computed* from this string at draw time, so a formatter change that grows an output
 /// by one character would otherwise start clipping the glyph with nothing to say so.
-let menuBarRateWidestSample = "999.9 MB/s"
+let menuBarRateWidestSample = "999 MB/s"
 
 /// CFBundleShortVersionString → what the user sees for it.
 ///

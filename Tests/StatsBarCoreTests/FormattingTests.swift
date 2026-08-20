@@ -209,8 +209,8 @@ struct FormattingTests {
         (999.5, "1 KB/s"),       // half a printed digit later, and it must have promoted
         (999_499.0, "999 KB/s"),
         (999_500.0, "1.0 MB/s"),
-        (999_949_999.0, "999.9 MB/s"),
-        (999_950_000.0, "1.0 GB/s"),
+        (999_499_999.0, "999 MB/s"),
+        (999_500_000.0, "1.0 GB/s"),
     ])
     func menuBarRateBoundaries(input: Double, expected: String) {
         // These six are the whole point of moving this function into Core. Each pair straddles the
@@ -225,13 +225,37 @@ struct FormattingTests {
         (0.0, "0 B/s"),
         (512.0, "512 B/s"),
         (1000.0, "1 KB/s"),
-        (58_500_000.0, "58.5 MB/s"),
+        (58_500_000.0, "58 MB/s"),
         (2_400_000_000.0, "2.4 GB/s"),
     ])
     func menuBarRateOrdinaryValues(input: Double, expected: String) {
-        // The threshold move must not shift anything a person actually sees. This is a menu-bar label
-        // that is on screen permanently, so a change of unit or precision in the normal range would be
-        // far more noticeable than the edge case being fixed.
+        // The band thresholds must not shift anything a person actually sees. This is a menu-bar label
+        // that is on screen permanently, so a change of unit in the normal range would be far more
+        // noticeable than the edge case that first brought this function into Core.
+        //
+        // This reading is the one that DID change, and deliberately: it read "58.5 MB/s" until the
+        // decimal was dropped above ten, which is what let the reserved field shrink from 58 pt to 50
+        // (see menuBarRate). Pinned here rather than left to drift, because the next person to widen
+        // the precision back would be spending menu-bar width without knowing it.
+        //
+        // "58", not "59": %.0f rounds half to even, so an exact .5 goes down here and up from 59.5.
+        // Every whole-number band in this file has always done that — the B/s band prints 512.5 as
+        // "512" — so this is the existing convention reaching one band further, not a new rule.
+        #expect(menuBarRate(input) == expected)
+    }
+
+    @Test("menuBarRate keeps a decimal below ten, where it is the whole reading", arguments: [
+        (9_940_000.0, "9.9 MB/s"),      // last value that still prints a tenth
+        (9_950_000.0, "10 MB/s"),       // half a printed digit later the decimal is gone
+        (9_940_000_000.0, "9.9 GB/s"),
+        (9_950_000_000.0, "10 GB/s"),
+    ])
+    func menuBarRateDecimalSwitch(input: Double, expected: String) {
+        // The switch is at 9.95, not 10, for the same reason every threshold in Formatting.swift is
+        // offset: 9.95 is where the decimal form would print "10.0", and a band whose own rule says it
+        // shows tenths below ten must not print ten. A weaker guard comparing against a flat 10 would
+        // accept 9.99 and print "10.0 MB/s" — two characters wider than the reserved field, which is
+        // the exact defect the field was sized to prevent.
         #expect(menuBarRate(input) == expected)
     }
 
@@ -255,7 +279,7 @@ struct FormattingTests {
         // and at 999.94 MB/s / 999.95 MB/s.
         let sweep: [Double] = [0, 1, 8, 512, 999, 999.4, 999.5, 1_000, 12_000, 340_000, 512_000,
                                999_499, 999_500, 1_000_000, 2_400_000, 140_000_000,
-                               999_949_999, 999_950_000, 1_000_000_000, 999_900_000_000]
+                               999_949_999, 999_950_000, 1_000_000_000, 999_400_000_000]
         for v in sweep {
             #expect(menuBarRate(v).count <= menuBarRateWidestSample.count,
                     "menuBarRate(\(v)) = \"\(menuBarRate(v))\" overflows the reserved field")
@@ -268,7 +292,7 @@ struct FormattingTests {
         // top band has no promotion above it, so a loopback burst does print wider and the item does
         // widen. Deleting the max() in networkMenuBarImage in favour of a clamp would clip this
         // instead, and a clipped reading is indistinguishable from a plausible one.
-        #expect(menuBarRate(1_000_000_000_000) == "1000.0 GB/s")
+        #expect(menuBarRate(1_000_000_000_000) == "1000 GB/s")
         #expect(menuBarRate(1_000_000_000_000).count > menuBarRateWidestSample.count)
     }
 

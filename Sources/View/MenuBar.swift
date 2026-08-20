@@ -116,11 +116,14 @@ func batteryMenuBarImage(level: Double, charging: Bool, percent: Int? = nil) -> 
 /// NSStatusItem is exactly as wide as the image handed to it, and every popover in this app is shown
 /// relative to a status-item button, which NSPopover goes on following for as long as it is open. So
 /// each digit-count change moved the button and the open popover jumped with it — measured at 37 pt
-/// of horizontal travel for the 31 → 58 pt swing this glyph had between "0 B/s" and "999.0 MB/s".
+/// of horizontal travel for the 31 → 58 pt swing this glyph had when the formatter still carried a
+/// decimal all the way to "999.9 MB/s".
 ///
-/// A constant width costs a few points of menu bar that idle readings leave blank, and buys a popover
-/// that holds still plus a menu bar whose other items stop sliding once a second. The two lines stay
-/// right-aligned, so the reserved slack opens on the left and the digits themselves never move.
+/// The field is 50 pt now rather than that 58, because a reserved field is only ever as wide as the
+/// widest reading and menuBarRate was charging four digits and a point for one it prints above ten.
+/// What is left is the reservation itself: the item is 50 pt at every rate, so an idle "0 B/s" that
+/// needs 31 leaves 19 blank. That is what a still popover costs, and the two lines stay right-aligned
+/// so the slack opens on the left and the digits themselves never move.
 ///
 /// The up arrow is red and the down arrow blue, matching the Total upload / download markers in the
 /// popover. A coloured menu-bar image can't be a template (templates render monochrome), so the
