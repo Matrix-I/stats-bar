@@ -152,6 +152,17 @@ func menuBarRate(_ bytesPerSec: Double) -> String {
     return String(format: "%.1f GB/s", mb / 1000)
 }
 
+/// CFBundleShortVersionString → what the user sees for it.
+///
+/// A `-SNAPSHOT` build is a dev build cut from whatever line of work is currently checked out —
+/// sometimes a release branch on its way to the next minor, sometimes a hotfix on its way to the next
+/// patch — so the number in front of that suffix is CLAUDE.md's "judgement call, not a formula": a
+/// placeholder nobody has committed to yet. Printing it as "v2.13.0-SNAPSHOT" states that placeholder as
+/// settled fact; "dev" says only what is actually true regardless of which branch produced the build.
+func displayVersion(_ raw: String) -> String {
+    raw.hasSuffix("-SNAPSHOT") ? "dev" : "v\(raw)"
+}
+
 /// ISO-3166 alpha-2 country code → flag emoji (e.g. "VN" → 🇻🇳) by mapping each letter to its
 /// regional-indicator symbol. Returns "" for anything that isn't two letters.
 func flagEmoji(_ code: String) -> String {

@@ -228,7 +228,7 @@ final class SimpleUpdateUserDriver: NSObject, SPUUserDriver {
     private var receivedLength: UInt64 = 0
 
     private var currentVersion: String {
-        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String).map { "v\($0)" } ?? "—"
+        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String).map(displayVersion) ?? "—"
     }
 
     /// Invoke the armed completion block once, then clear every slot and hide the window. Used for

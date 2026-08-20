@@ -155,6 +155,21 @@ struct FormattingTests {
         #expect(parts.unit == unit)
     }
 
+    // MARK: displayVersion — dev builds show "dev", not a placeholder release number
+
+    @Test("displayVersion shows dev for a SNAPSHOT build, v-prefixed otherwise", arguments: [
+        ("2.13.0-SNAPSHOT", "dev"),
+        ("2.12.3", "v2.12.3"),
+        ("2.12.3-SNAPSHOT", "dev"),
+    ])
+    func displayVersionHidesTheSnapshotNumber(input: String, expected: String) {
+        // The number in front of "-SNAPSHOT" is a placeholder CLAUDE.md itself calls "a judgement call,
+        // not a formula" — it might ship as the next minor or collapse to a hotfix patch, and a dev
+        // build can be either depending on which branch it was cut from. Showing "dev" says only what
+        // is certain; showing the placeholder number would state a guess as if it were settled.
+        #expect(displayVersion(input) == expected)
+    }
+
     // MARK: flagEmoji — the public-IP country row
 
     @Test("flagEmoji maps letters to regional indicators")

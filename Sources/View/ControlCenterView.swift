@@ -40,13 +40,13 @@ struct ControlCenterView: View {
     let checkForUpdates: () -> Void
 
     /// The app's marketing version (CFBundleShortVersionString), shown top-right in the header — e.g.
-    /// "v2.2.0". Read from the bundle so it tracks build_app.sh's version bump with no code change.
-    /// A `static let` (computed once for the process) rather than a computed property: the version is
-    /// constant at runtime, and the hub observes all five readers so its body re-evaluates often — no
-    /// need to redo the Bundle lookup on every eval.
+    /// "v2.2.0", or "dev" for a -SNAPSHOT build (see displayVersion). Read from the bundle so it tracks
+    /// build_app.sh's version bump with no code change. A `static let` (computed once for the process)
+    /// rather than a computed property: the version is constant at runtime, and the hub observes all
+    /// five readers so its body re-evaluates often — no need to redo the Bundle lookup on every eval.
     private static let appVersion: String = {
         let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
-        return v.map { "v\($0)" } ?? ""
+        return v.map(displayVersion) ?? ""
     }()
 
     // Per-item menu-bar visibility. Defaults match AppDelegate's `object(forKey:) as? Bool ?? true`
