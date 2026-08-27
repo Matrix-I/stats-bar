@@ -5,6 +5,19 @@
 // every field is optional and simply hidden by the view when it wasn't (yet) read.
 
 import Foundation
+import AppKit
+
+/// One row of the Network tab's TOP PROCESSES table: who is moving bytes, and how fast.
+///
+/// `bytesPerSec` is download and upload combined, which is what the rows are ranked on — see
+/// ProcessNetworkRate. Shaped like MemoryProcess so both tables can use the same ProcessRow view.
+struct NetworkProcess: Identifiable {
+    let pid: Int
+    let name: String
+    let bytesPerSec: Double
+    let icon: NSImage?
+    var id: Int { pid }
+}
 
 /// One end-to-end reading of the primary network interface. All fields are optional/defaulted so a
 /// partially-completed read (e.g. Wi-Fi details in, ping still running, public IP disabled) still
@@ -46,6 +59,15 @@ struct NetworkInfo {
     var internetReachable = false
     var latencyMs: Double?         // mean RTT of the last ping burst
     var jitterMs: Double?          // stddev of the last ping burst
+
+    // MARK: Top processes (popover-only — a nettop spawn; see NetworkReader)
+    /// The busiest processes right now, highest combined rate first.
+    var topProcesses: [NetworkProcess] = []
+    /// Why that table is empty, when it is empty for a reason worth telling the user about — nettop
+    /// missing, or output this build cannot read. nil covers both "fine" and "still measuring", which
+    /// the view tells apart by whether topProcesses is empty; the distinction that matters here is
+    /// between a table that will fill in a second and one that never will.
+    var processStatus: String?
 
     // MARK: Public IP (only populated when the "Show public IP" toggle is on)
     var publicIPv4: String?

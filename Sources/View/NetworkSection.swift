@@ -60,6 +60,7 @@ struct NetworkSection: View {
                 overview
                 interfaceBlock
                 addressBlock
+                processBlock
                 controls
             }
         }
@@ -180,6 +181,41 @@ struct NetworkSection: View {
                 if let p6 = info.publicIPv6 { InfoRow(label: "Public IP (v6)", value: p6 + flag) }
                 if info.publicIPv4 == nil && info.publicIPv6 == nil {
                     InfoRow(label: "Public IP", value: info.publicIPError ? "unavailable" : "looking up…")
+                }
+            }
+        }
+    }
+
+    // MARK: Top processes
+
+    /// Who is actually using the link, below the addresses. Reuses the CPU/RAM tables' ProcessRow so
+    /// all three read identically — icon, name, one right-aligned figure, and a right-click "Quit"
+    /// for rows that resolve to a running application.
+    ///
+    /// The figure is download and upload combined; see ProcessNetworkRate for why one number. A VPN
+    /// or proxy daemon carrying other processes' traffic appears as its own row and counts those bytes
+    /// a second time — that is what nettop reports and the table does not second-guess it, so on a
+    /// tunnelled machine expect the daemon at the top with roughly the sum of everything below it.
+    @ViewBuilder
+    private var processBlock: some View {
+        SectionCaption("TOP PROCESSES")
+        if let status = info.processStatus {
+            Text(status)
+                .font(.caption2).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } else if info.topProcesses.isEmpty {
+            // Every rate needs two samples, so the first tick after the popover opens has nothing to
+            // show yet. Distinguished from the quiet-network case by NetworkReader, which fills in
+            // processStatus once a measurement has actually happened.
+            Text("Measuring…")
+                .font(.caption2).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            VStack(spacing: 6) {
+                ProcessTableHeader(valueLabel: "Network")
+                ForEach(info.topProcesses) { p in
+                    ProcessRow(pid: p.pid, icon: p.icon, name: p.name, value: fmtRate(p.bytesPerSec))
                 }
             }
         }

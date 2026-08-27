@@ -42,6 +42,18 @@ final class NetworkReader: NSObject, ObservableObject {
     // ThroughputTracker (Sources/Core), where it is unit-tested; this reader only feeds it samples.
     private var throughput = ThroughputTracker()
 
+    // TOP PROCESSES. The nettop spawn happens on a background queue and hands back raw cumulative
+    // counters; the delta arithmetic that turns those into rates lives in ProcessNetworkRates
+    // (Sources/Core), where it is unit-tested. All three of these are main-thread only.
+    private var cachedTopProcesses: [NetworkProcess] = []
+    private var cachedProcessStatus: String?
+    private var processRates = ProcessNetworkRates()
+    // Throttled to the poll interval rather than something slower: this is a rate, and stretching the
+    // window between samples would not save work so much as change what the number means.
+    private lazy var processRead = ThrottledBackgroundValue<ProcessNetwork.Reading>(
+        label: "NetworkReader.processes", every: 1)
+    nonisolated private static let processCount = 5
+
     private var lastPingAt: DispatchTime?
     private var lastPublicIPAt: DispatchTime?
 
@@ -93,6 +105,7 @@ final class NetworkReader: NSObject, ObservableObject {
     /// A full, forced refresh across all three cadences — used on open and by the Refresh button.
     func refresh() {
         fastRefresh(full: true)
+        if panelOpen { maybeReadTopProcesses() }
         maybePing(force: true)
         maybePublicIP(force: true)
     }
@@ -114,6 +127,7 @@ final class NetworkReader: NSObject, ObservableObject {
         // lookup only matter inside the popover, so they stay gated on panelOpen.
         fastRefresh(full: panelOpen)
         guard panelOpen else { return }
+        maybeReadTopProcesses()
         maybePing(force: false)
         maybePublicIP(force: false)
     }
@@ -221,7 +235,46 @@ final class NetworkReader: NSObject, ObservableObject {
             }
         }
 
+        info.topProcesses = cachedTopProcesses
+        info.processStatus = cachedProcessStatus
+
         self.info = info
+    }
+
+    /// Sample per-process traffic and re-rank. Popover-only: it costs a subprocess, and nothing
+    /// outside the popover shows the table.
+    ///
+    /// Identity is resolved AFTER ranking and only for the survivors, the same ordering MemoryReader
+    /// calls load-bearing there — NSRunningApplication(processIdentifier:) is a lookup per pid, so
+    /// hoisting it above the rank would turn five of them into one for every process with a socket.
+    /// It runs on the main thread here rather than in `produce`, because it is an AppKit call and
+    /// five of them a second is nothing.
+    private func maybeReadTopProcesses() {
+        processRead.request(produce: { ProcessNetwork.read() }) { [weak self] reading in
+            guard let self else { return }
+            let ranked = self.processRates.update(with: reading.samples,
+                                                  atNanoseconds: DispatchTime.now().uptimeNanoseconds)
+            // A read error wins; otherwise an empty table means "nothing is moving" once a measurement
+            // has actually completed, and "still measuring" before that. The first sweep only ever
+            // primes the baseline, so that second state is real and about a second long.
+            if let status = reading.status {
+                self.cachedProcessStatus = status
+            } else if ranked.isEmpty && self.processRates.hasMeasured {
+                self.cachedProcessStatus = "No process is moving data right now."
+            } else {
+                self.cachedProcessStatus = nil
+            }
+            self.cachedTopProcesses = ranked.prefix(Self.processCount).map { rate in
+                let (name, icon) = ProcessList.identity(pid: rate.pid, fallback: rate.command)
+                return NetworkProcess(pid: rate.pid, name: name, bytesPerSec: rate.totalPerSec, icon: icon)
+            }
+            // Republish right away so the table appears on the tick that measured it, rather than one
+            // tick later — the first two sweeps produce nothing at all, and waiting adds a third.
+            var cur = self.info
+            cur.topProcesses = self.cachedTopProcesses
+            cur.processStatus = self.cachedProcessStatus
+            self.info = cur
+        }
     }
 
     private func maybePing(force: Bool) {
