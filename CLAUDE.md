@@ -14,6 +14,16 @@ Xcode install is not. `run_tests.sh` exists because SwiftPM cannot locate swift-
 itself — its header explains the three flags. `Package.swift` is for tests only and `build_app.sh` never
 reads it.
 
+**Both scripts now work around macro plugins the CLT does not ship where the compiler looks.** The macOS
+27 SDK makes `@State` and its siblings macros, and the plugin that expands them (`SwiftUIMacros`) comes
+only with full Xcode — so on CLT 27 every file in `Sources/View` fails to compile, and so does a two-line
+SwiftUI probe. `build_app.sh` detects that by compiling such a probe and falls back to the newest
+installed SDK that can build one, which is why its output may say it is building against `MacOSX26.5.sdk`.
+The same release moved `TestingMacros` into a `plugins/testing/` subdirectory the compiler does not
+search, which broke `@Suite` and `@Test` in every test file; `run_tests.sh` names that directory when it
+exists. Neither workaround is this repo's to remove — delete them when the CLT ships the plugins, not
+before.
+
 Tests use swift-testing (`import Testing`, `@Suite`, `@Test`, `#expect`), not XCTest — the CLT ships the
 former and not the latter.
 
@@ -70,10 +80,14 @@ find Sources/Core -name '*.swift' -exec cat {} + | wc -l   # and the same over S
 ```
 
 For anything touching a reader, a view or the app shell, also compile the whole tree the way CI's build
-job does:
+job does. On a machine whose default SDK needs the SwiftUIMacros plugin — see the build note above — pass
+the SDK `build_app.sh` reports falling back to, or this fails on `@State` in files you did not touch:
 
 ```bash
+# A machine whose default SDK still works:
 swiftc -parse-as-library -target "$(uname -m)-apple-macos13" -typecheck $(find Sources -name '*.swift') -F Frameworks
+# CLT 27, where it does not — same command, naming the SDK build_app.sh falls back to:
+swiftc -parse-as-library -target "$(uname -m)-apple-macos13" -sdk /Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk -typecheck $(find Sources -name '*.swift') -F Frameworks
 ```
 
 When a change is *meant* to preserve behaviour, prove it rather than asserting it: copy the previous

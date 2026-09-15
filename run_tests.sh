@@ -42,11 +42,19 @@ fi
 DEV="$(xcode-select -p)"
 FRAMEWORKS="$DEV/Library/Developer/Frameworks"
 INTEROP="$DEV/Library/Developer/usr/lib"
+# @Suite and @Test are macros, so the compiler has to load a plugin to expand them at all. The CLT
+# that ships with macOS 27 (Swift 6.4) moved that plugin down one level, from
+# usr/lib/swift/host/plugins/libTestingMacros.dylib into .../plugins/testing/, and the compiler still
+# searches only the parent — so every test file fails to compile with "plugin for module
+# 'TestingMacros' not found", including files nobody has touched. Naming the subdirectory when it
+# exists costs nothing on a toolchain that keeps the plugin where the compiler already looks.
+MACROS="$DEV/usr/lib/swift/host/plugins/testing"
 FLAGS=()
 if [ -d "$FRAMEWORKS/Testing.framework" ]; then
     FLAGS+=(-Xswiftc -F -Xswiftc "$FRAMEWORKS" -Xlinker -rpath -Xlinker "$FRAMEWORKS")
     [ -d "$INTEROP" ] && FLAGS+=(-Xlinker -rpath -Xlinker "$INTEROP")
 fi
+[ -d "$MACROS" ] && FLAGS+=(-Xswiftc -plugin-path -Xswiftc "$MACROS")
 
 # Expect one linker warning: Testing.framework is built for macOS 14 while this package declares 13.0.
 # That is deliberate and must not be "fixed" by raising the platform — 13.0 is what makes availability

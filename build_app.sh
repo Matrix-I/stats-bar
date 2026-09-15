@@ -33,8 +33,50 @@ SOURCES=$(find Sources -name '*.swift')
 # in step with LSMinimumSystemVersion. The arch comes from uname so that building on an Intel Mac
 # still produces a native x86_64 binary rather than cross-compiling to arm64.
 TARGET="$(uname -m)-apple-macos13.0"
+
+# Which SDK, and why this is not always the default one.
+#
+# The macOS 27 SDK declares @State, @Binding and the rest of SwiftUI's property wrappers as MACROS,
+# which the compiler can only expand by loading a plugin — SwiftUIMacros. That plugin ships with full
+# Xcode and NOT with the Command Line Tools, and this tree has only ever needed the CLT. So on a
+# machine with CLT 27 every SwiftUI file in Sources/View fails with "plugin for module 'SwiftUIMacros'
+# not found", including files nobody has touched, and a two-line SwiftUI probe fails the same way.
+# Nothing in this repo can fix that: the plugin is simply not on the machine.
+#
+# What is on the machine is the previous SDK, which CLT 27 installs beside the new one and which
+# declares those wrappers the old way. Building against it costs nothing here — the deployment target
+# is macOS 13 and this app calls no macOS 27 API — so the fallback is to the newest SDK that can
+# actually compile the tree, preferring the default whenever it works.
+#
+# Probing rather than version-matching: the question is "does this SDK need a plugin I do not have",
+# and the honest way to ask it is to compile something that would need one. A version check would
+# also have to guess which future CLT starts shipping the plugin.
+PROBE="$(mktemp -t statsbar-sdk-probe)".swift
+trap 'rm -f "$PROBE"' EXIT
+printf 'import SwiftUI\nstruct P: View { @State var n = 0; var body: some View { Text("\\(n)") } }\n' > "$PROBE"
+sdk_compiles() { swiftc -parse-as-library -target "$TARGET" -sdk "$1" -typecheck "$PROBE" >/dev/null 2>&1; }
+
+SDKROOT_FLAGS=()
+DEFAULT_SDK="$(xcrun --show-sdk-path)"
+if ! sdk_compiles "$DEFAULT_SDK"; then
+    FALLBACK=""
+    # Newest first, so a machine carrying several older SDKs picks the closest one that works.
+    for candidate in $(ls -d "$(dirname "$DEFAULT_SDK")"/MacOSX*.sdk 2>/dev/null | sort -Vr); do
+        [ "$candidate" = "$DEFAULT_SDK" ] && continue
+        if sdk_compiles "$candidate"; then FALLBACK="$candidate"; break; fi
+    done
+    if [ -z "$FALLBACK" ]; then
+        echo "❌ No SDK on this machine can compile SwiftUI: $(basename "$DEFAULT_SDK") needs the" >&2
+        echo "   SwiftUIMacros plugin, which ships only with full Xcode, and no older SDK is installed." >&2
+        echo "   Install Xcode, or an older Command Line Tools package, and try again." >&2
+        exit 1
+    fi
+    echo "⚠️  $(basename "$DEFAULT_SDK") needs the SwiftUIMacros plugin (full Xcode only) — building against $(basename "$FALLBACK")."
+    SDKROOT_FLAGS=(-sdk "$FALLBACK")
+fi
+
 # shellcheck disable=SC2086
-swiftc -O -parse-as-library -target "$TARGET" $SOURCES \
+swiftc -O -parse-as-library -target "$TARGET" ${SDKROOT_FLAGS[@]+"${SDKROOT_FLAGS[@]}"} $SOURCES \
     -F "$PWD/Frameworks" -framework Sparkle \
     -Xlinker -rpath -Xlinker "@executable_path/../Frameworks" \
     -o "$APP"
