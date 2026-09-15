@@ -7,6 +7,30 @@
     <language>en</language>
     <!-- APPCAST_ITEMS: update_appcast.sh prepends each release's <item> immediately below this line. -->
     <item>
+      <title>Version 2.13.1</title>
+      <pubDate>Tue, 15 Sep 2026 13:38:33 +0700</pubDate>
+      <sparkle:version>2.13.1</sparkle:version>
+      <sparkle:shortVersionString>2.13.1</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <sparkle:fullReleaseNotesLink>https://github.com/Matrix-I/stats-bar/releases/tag/v2.13.1</sparkle:fullReleaseNotesLink>
+      <description><![CDATA[# StatsBar v2.13.1 — the iPhone card gets its capacities back on iOS 27
+
+A hotfix, so the patch number: no new panels, and `2.14.0` stays reserved for the release that adds something. **If you have updated a phone or iPad to iOS 27 and its card lost Maximum Capacity and every mAh figure, this is that.** Nothing changes for a device still on an earlier iOS.
+
+- **Fixed: an iPhone on iOS 27 showed a battery card with half its rows missing.** iOS moved the keys. `DesignCapacity`, `AppleRawMaxCapacity`, `NominalChargeCapacity` and `AppleRawCurrentCapacity` are gone from the top level of the battery registry, and the same figures now sit inside a `BatteryData` sub-dictionary under partly different names. Cycle count, voltage and amperage did not move — which is exactly why this was easy to miss: the card went on showing three live, correct numbers and read as merely sparse rather than broken, with no error anywhere. Measured on an iPhone 17 running iOS 27.0: 3521 mAh design, 3519 nominal, 3545 full charge, and a Maximum Capacity of 99.9% where the card had been showing no health row at all. A device still publishing the old names reads exactly as it did before, so this is not a swap of one layout for another.
+
+  The repair that suggests itself is wrong, and wrong in a way nobody downstream could catch. The top level still carries `CurrentCapacity` and `MaxCapacity`, and on iOS 27 those are **percentages** — 65 and 100, sitting beside a 3521 mAh battery. They are whole numbers, they are the obvious names to reach for once the mAh keys are missing, and taking them would have printed "65 mAh of 100 mAh" and a battery health of 3%, formatted exactly like a real reading. The two units are now kept apart by construction rather than by care, and the test that proves it was itself checked by breaking the code: the first version of that test passed even with the bug deliberately reintroduced, because with the new keys present the correct value is found before any fallback runs.
+
+- **Known, and not fixable from here: iOS 27 publishes no battery temperature.** It is absent from the top level and from every sub-dictionary; the only battery temperatures left in the registry are a list of channel names with no values attached. So the Temperature row hides itself on those devices and the hot-battery notification will not fire for them. The alternative was inventing a figure out of something that is not a temperature, which is worse than an honest gap.
+
+- **Fixed, for anyone who builds StatsBar rather than installing it: neither build script ran on the macOS 27 Command Line Tools.** Two unrelated breakages in the same Apple release, neither of them in this project. The macOS 27 SDK makes SwiftUI's `@State` and its siblings macros, and the plugin that expands them ships only with full Xcode — so every view file failed to compile, as did a two-line SwiftUI test file. The build script now detects that and falls back to the newest installed SDK that works, which costs nothing given a macOS 13 deployment target. Separately, the same release moved the swift-testing macro plugin into a subdirectory the compiler does not search, which broke `@Suite` and `@Test` in every test file; the test script now names it. Both workarounds are inert on a machine where the default toolchain works, and both should be deleted when Apple ships the plugins with the CLT.
+
+The tested layer is at 214 tests across 16 suites, up from 200 across 15.
+
+_Not notarized — right-click → Open on first launch (on macOS 15+ the confirmation moved to System Settings ▸ Privacy & Security ▸ "Open Anyway"), or `xattr -dr com.apple.quarantine /Applications/StatsBar.app`._]]></description>
+      <enclosure url="https://github.com/Matrix-I/stats-bar/releases/download/v2.13.1/StatsBar-v2.13.1.dmg" sparkle:edSignature="lnRlY5dJqrak+bXfRCCTiGLl6CDL3IVFPUxlvwxFd/tW4XK9JJLZBzCGCSTnkrrbxXNSvjCU8QQjlNfGqh5GAw==" length="2576157" type="application/octet-stream" />
+    </item>
+    <item>
       <title>Version 2.13.0</title>
       <pubDate>Mon, 31 Aug 2026 22:27:06 +0700</pubDate>
       <sparkle:version>2.13.0</sparkle:version>
