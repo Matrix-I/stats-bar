@@ -317,25 +317,23 @@ private final class IOSDeviceWorker: @unchecked Sendable {
             }
 
             if let reg = readBatteryRegistry(diagnosticsPath, udid: udid, network: network) {
-                dev.serial = reg["Serial"] as? String ?? ""
-                dev.designCapacity = intOrNil(reg["DesignCapacity"])
-                dev.maxCapacity = intOrNil(reg["AppleRawMaxCapacity"]) ?? intOrNil(reg["NominalChargeCapacity"])
-                dev.nominalChargeCapacity = intOrNil(reg["NominalChargeCapacity"])
-                dev.currentCapacity = intOrNil(reg["AppleRawCurrentCapacity"])
-                if let relMax = intOrNil(reg["MaxCapacity"]), relMax > 0,
-                   let relCur = intOrNil(reg["CurrentCapacity"]) {
-                    dev.stateOfCharge = min(100, Double(relCur) / Double(relMax) * 100)
-                }
-                dev.cycleCount = intOrNil(reg["CycleCount"])
-                // Signed for the same reason as Amperage below — see BatteryReader. Reading a
-                // sub-zero temperature unsigned would also trip TemperatureAlerter's hot-battery
-                // warning, since the bogus value is far above the threshold.
-                if let t = signedIntOrNil(reg["Temperature"]) { dev.temperatureC = Double(t) / 100.0 }
-                if let v = intOrNil(reg["Voltage"]) { dev.voltageV = Double(v) / 1000.0 }
-                if let a = signedIntOrNil(reg["Amperage"]) { dev.amperageA = Double(a) / 1000.0 }
-                dev.isCharging = reg["IsCharging"] as? Bool ?? false
-                dev.externalConnected = reg["ExternalConnected"] as? Bool ?? false
-                dev.fullyCharged = reg["FullyCharged"] as? Bool ?? false
+                // Which key holds which figure is IOSBatteryRegistry's job, in Sources/Core: iOS
+                // moves them between releases, and the way that goes wrong is a card that still
+                // renders while four of its numbers quietly stop existing. See that type's header.
+                let batt = IOSBatteryRegistry.parse(reg)
+                dev.serial = batt.serial ?? ""
+                dev.designCapacity = batt.designCapacity
+                dev.maxCapacity = batt.maxCapacity
+                dev.nominalChargeCapacity = batt.nominalChargeCapacity
+                dev.currentCapacity = batt.currentCapacity
+                dev.stateOfCharge = batt.stateOfCharge
+                dev.cycleCount = batt.cycleCount
+                dev.temperatureC = batt.temperatureC
+                dev.voltageV = batt.voltageV
+                dev.amperageA = batt.amperageA
+                dev.isCharging = batt.isCharging
+                dev.externalConnected = batt.externalConnected
+                dev.fullyCharged = batt.fullyCharged
                 dev.capturedAt = Date()
             } else if trusted {
                 dev.isLocked = true
@@ -466,8 +464,7 @@ private final class IOSDeviceWorker: @unchecked Sendable {
                                             timeout: budget.callTimeout),
                    let plist = try? PropertyListSerialization.propertyList(from: raw, options: [], format: nil) as? [String: Any],
                    let reg = plist["IORegistry"] as? [String: Any],
-                   reg["AppleRawMaxCapacity"] != nil || reg["NominalChargeCapacity"] != nil
-                       || reg["DesignCapacity"] != nil || reg["CycleCount"] != nil {
+                   IOSBatteryRegistry.looksLikeABattery(reg) {
                     return reg
                 }
             }
