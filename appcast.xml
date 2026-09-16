@@ -7,6 +7,28 @@
     <language>en</language>
     <!-- APPCAST_ITEMS: update_appcast.sh prepends each release's <item> immediately below this line. -->
     <item>
+      <title>Version 2.13.2</title>
+      <pubDate>Wed, 16 Sep 2026 09:16:34 +0700</pubDate>
+      <sparkle:version>2.13.2</sparkle:version>
+      <sparkle:shortVersionString>2.13.2</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <sparkle:fullReleaseNotesLink>https://github.com/Matrix-I/stats-bar/releases/tag/v2.13.2</sparkle:fullReleaseNotesLink>
+      <description><![CDATA[# StatsBar v2.13.2 — the battery temperature is back on both cards, and the Mac card stops printing 0 mAh
+
+A hotfix one release after the last, and it corrects that release's notes as well as its code. **If your Mac is on macOS 27, the Mac battery card in v2.13.1 is wrong** — not sparse, wrong: it prints "Design capacity: 0 mAh", "Full charge capacity: 100 mAh" and "Temperature: 0.0 °C". If your iPhone is on iOS 27, its Temperature row comes back. Nothing changes on a Mac or an iPhone still on the previous OS.
+
+- **Fixed: on macOS 27 the Mac battery card showed 0 mAh design capacity, 100 mAh full charge and 0.0 °C.** macOS 27 did to the Mac's battery registry exactly what iOS 27 did to the iPhone's: the milliamp-hour keys moved into a `BatteryData` sub-dictionary and `Temperature` left the entry. Among capacity keys the top level now keeps only `CurrentCapacity` and `MaxCapacity`, both the percentage 100, beside a 6075 mAh battery. The Mac reader had an Intel-era fallback for exactly those two names — correct for years, because on Intel they really did hold milliamp-hours — and macOS 27 walked it straight into printing the percentage as a capacity. Both cards now read through the one parser v2.13.1 introduced for the iPhone, which keeps milliamp-hours and percentages apart by construction; it needed no change to read a Mac correctly, only to be called.
+
+- **Fixed, and v2.13.1's notes corrected: the battery temperature was not gone. It moved.** Those notes said iOS 27 publishes no battery temperature and that nothing could be done from the Mac side. That was wrong. On both systems the gauge has an entry of its own beside the one the card reads, `AppleSmartBatteryPack`, and it kept the whole old vocabulary — `Temperature`, `AppleRawMaxCapacity`, `AppleRawCurrentCapacity`, `DesignCapacity` — nested one level down. The search that missed it chose which entries to inspect from the IOPower plane, which lists only power-managed nodes; the pack is not one. The IOService plane has 873 more identities, and the pack is among them. So the Temperature row returns on iOS 27 iPhones and on macOS 27 Macs, in the same unit and from the same gauge as before, and the hot-battery notification for a charging iPhone works again. The extra registry read happens only on a device whose main entry is missing what the pack has; a device on the previous OS makes exactly the calls it made before.
+
+- **Behind that, for a Mac that publishes neither key:** the SMC still exposes the pack's own sensors, and the Mac reader takes the hottest of them as a last resort. It is not reached on the machine this was measured on.
+
+The tested layer is at 224 tests across 16 suites, up from 214. The new guards were each checked by breaking the code they protect and watching the suite go red.
+
+_Not notarized — right-click → Open on first launch (on macOS 15+ the confirmation moved to System Settings ▸ Privacy & Security ▸ "Open Anyway"), or `xattr -dr com.apple.quarantine /Applications/StatsBar.app`._]]></description>
+      <enclosure url="https://github.com/Matrix-I/stats-bar/releases/download/v2.13.2/StatsBar-v2.13.2.dmg" sparkle:edSignature="G8z+Npkju2mHaWrzGjGJIHcvhJJ6JKo3YjcYvw1Nrldr5xtfnAfPi4z2AWD/6tvvFtXcQAgW2HRNAZ1oYYCPBA==" length="2576474" type="application/octet-stream" />
+    </item>
+    <item>
       <title>Version 2.13.1</title>
       <pubDate>Tue, 15 Sep 2026 13:38:33 +0700</pubDate>
       <sparkle:version>2.13.1</sparkle:version>
