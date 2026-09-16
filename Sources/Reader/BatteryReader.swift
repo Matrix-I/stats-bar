@@ -106,43 +106,48 @@ final class BatteryReader: ObservableObject {
                                                 kCFAllocatorDefault, 0) == KERN_SUCCESS,
               let props = propsRef?.takeRetainedValue() as? [String: Any] else { return }
 
+        // Which key holds which figure is SmartBatteryRegistry's job, in Sources/Core. macOS moves
+        // them between releases just as iOS does — macOS 27 emptied the top level of every mAh key —
+        // and the way that went wrong here was not an empty card but a plausible one. The block this
+        // replaces fell back to "MaxCapacity"/"CurrentCapacity" when the AppleRaw* keys read zero,
+        // which was right on Intel, where those keys really did hold mAh, and became "Full charge
+        // capacity: 100 mAh" above "Design capacity: 0 mAh" the moment they turned into percentages.
+        // See that type's header; the unit separation lives there, with the tests.
+        // The gauge's own entry, AppleSmartBatteryPack, kept the vocabulary macOS 27 removed from the
+        // one above — Temperature and the AppleRaw* mAh keys, nested in a BatteryData of its own. Read
+        // only when the entry is short of what the pack has, so a machine still on the old layout does
+        // exactly what it did before, and in-process, so it costs a registry lookup and not a fork.
+        let pack = SmartBatteryRegistry.wantsPack(props) ? Self.registryProperties(ofClass: "AppleSmartBatteryPack") : nil
+        let batt = SmartBatteryRegistry.parse(props, pack: pack)
+
         var i = BatteryInfo()
         i.deviceName = props["DeviceName"] as? String ?? "Battery"
         i.serial = props["Serial"] as? String ?? ""
-        i.designCapacity = intOf(props["DesignCapacity"])
-
-        // Apple Silicon: AppleRaw* holds the real mAh values; older Intel: fall back to Max/CurrentCapacity
-        i.maxCapacity = intOf(props["AppleRawMaxCapacity"])
-        if i.maxCapacity == 0 { i.maxCapacity = intOf(props["MaxCapacity"]) }
-        i.currentCapacity = intOf(props["AppleRawCurrentCapacity"])
-        if i.currentCapacity == 0 { i.currentCapacity = intOf(props["CurrentCapacity"]) }
+        i.designCapacity = batt.designCapacity ?? 0
+        i.maxCapacity = batt.maxCapacity ?? 0
+        i.currentCapacity = batt.currentCapacity ?? 0
 
         // State of Charge — the calibrated 0–100 % macOS reports (System Information's
-        // "State of Charge (%)"), NOT the raw mAh ratio above. On Apple Silicon the relative
-        // "CurrentCapacity"/"MaxCapacity" keys are already percentages (MaxCapacity == 100,
-        // CurrentCapacity == the SoC, which the gauge pins to 100 at full); on Intel they hold
-        // mAh and the ratio yields the same percentage. Falls back to the raw mAh ratio only if
-        // the relative max is somehow absent.
-        let relMax = intOf(props["MaxCapacity"])
-        let relCurrent = intOf(props["CurrentCapacity"])
-        if relMax > 0 {
-            i.stateOfCharge = min(100, Double(relCurrent) / Double(relMax) * 100)
-        } else if i.maxCapacity > 0 {
-            i.stateOfCharge = min(100, Double(i.currentCapacity) / Double(i.maxCapacity) * 100)
-        }
+        // "State of Charge (%)"), NOT the raw mAh ratio. The parser derives it from the relative
+        // "CurrentCapacity"/"MaxCapacity" pair, which is a percentage pair on Apple Silicon and an
+        // mAh pair on Intel that yields the same percentage. The raw-mAh fallback below is kept from
+        // the previous implementation for a pack that publishes no relative max at all.
+        i.stateOfCharge = batt.stateOfCharge
+            ?? (i.maxCapacity > 0 ? min(100, Double(i.currentCapacity) / Double(i.maxCapacity) * 100) : 0)
 
-        i.cycleCount = intOf(props["CycleCount"])
+        i.cycleCount = batt.cycleCount ?? 0
         // Rated cycle life. Apple names it DesignCycleCount9C (1000 on this M1 Pro); it sits in the
         // dictionary already fetched above, so reading it costs nothing.
         i.designCycleCount = intOf(props["DesignCycleCount9C"])
-        // Signed like Amperage below: a sub-zero battery (a cold car overnight) comes back as an
-        // unsigned 32-bit two's complement value, which read unsigned would land around 43 million °C.
-        i.temperatureC = Double(signedIntOf(props["Temperature"])) / 100.0
-        i.voltageV = Double(intOf(props["Voltage"])) / 1000.0
-        i.amperageA = Double(signedIntOf(props["Amperage"])) / 1000.0
-        i.isCharging = props["IsCharging"] as? Bool ?? false
-        i.externalConnected = props["ExternalConnected"] as? Bool ?? false
-        i.fullyCharged = props["FullyCharged"] as? Bool ?? false
+        // From the entry or the pack; a Mac publishing neither gets the SMC further down, while the
+        // panel is open. Nil reaching the view hides the row, which is the point — the previous line
+        // divided a missing key by 100 and presented the result as 0.0 °C.
+        i.temperatureC = batt.temperatureC
+        i.voltageV = batt.voltageV ?? 0
+        i.amperageA = batt.amperageA ?? 0
+        i.isCharging = batt.isCharging
+        i.externalConnected = batt.externalConnected
+        i.fullyCharged = batt.fullyCharged
         i.timeToEmpty = intOf(props["AvgTimeToEmpty"])
         i.timeToFull = intOf(props["AvgTimeToFull"])
 
@@ -163,6 +168,9 @@ final class BatteryReader: ObservableObject {
         // while the panel is closed — the menu-bar glyph needs only the IOKit charge fields read
         // above. Matches the popover-gating every other reader does (cf. CPUReader's temperature read).
         if panelOpen {
+            // Last resort for the pack temperature, when neither registry entry publishes one. Behind
+            // the same gate as the rails because it is the same kind of cost and shows in the same rows.
+            if i.temperatureC == nil { i.temperatureC = smcBatteryTemperature() }
             i.smcSystemTotalW  = smc.readFloat("PSTR")
             i.smcDCInW         = smc.readFloat("PDTR")
             i.smcBrightnessW   = smc.readFloat("PDBR")
@@ -183,6 +191,34 @@ final class BatteryReader: ObservableObject {
         // refresh() only ever runs on the main thread (init / setPanelOpen / the main-run-loop poll),
         // so publish directly rather than hopping to the next run-loop pass.
         info = i
+    }
+
+    /// The property dictionary of the first registry entry of `cls`, or nil when there is none.
+    private static func registryProperties(ofClass cls: String) -> [String: Any]? {
+        let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching(cls))
+        guard service != IO_OBJECT_NULL else { return nil }
+        defer { IOObjectRelease(service) }
+        var ref: Unmanaged<CFMutableDictionary>?
+        guard IORegistryEntryCreateCFProperties(service, &ref, kCFAllocatorDefault, 0) == KERN_SUCCESS else { return nil }
+        return ref?.takeRetainedValue() as? [String: Any]
+    }
+
+    /// The battery pack temperature from the SMC, in °C, or nil on a Mac that publishes no pack
+    /// sensor. The tier below both registry entries: on this macOS 27 machine the pack entry answers
+    /// first and this is never reached, but a Mac can ask its own SMC where an iPhone over lockdown
+    /// cannot, and that is worth keeping for a machine that publishes neither key.
+    ///
+    /// TB0T/TB1T/TB2T are the pack's sensors. They were identified as the pack's rather than
+    /// something nearby by reading all 210 T-prefixed keys at once on the J314s measured here: those
+    /// three sat at 33.2/33.2/32.1 °C while every TC** CPU-die key beside them read 47–52 °C.
+    ///
+    /// The hottest of the three is reported, not their mean: they are separate sensors on one pack,
+    /// and a figure whose job is to say the battery is hot should not average that away. A reading of
+    /// exactly zero is dropped rather than trusted — on this machine the two TH1* drive sensors read
+    /// 0.00 for a bay that is not populated, so zero is how this SMC spells "no sensor here", and
+    /// letting one through would put back the 0.0 °C row this change exists to remove.
+    private func smcBatteryTemperature() -> Double? {
+        ["TB0T", "TB1T", "TB2T"].compactMap { smc.readFloat($0) }.filter { $0 > 0 }.max()
     }
 
     /// Refresh macOS's "Maximum Capacity" at most every few minutes, off the main thread. Called from

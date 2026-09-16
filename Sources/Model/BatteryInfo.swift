@@ -42,7 +42,7 @@ struct BatteryInfo {
     var maximumCapacityPercent: Int? = nil  // % — macOS's own "Maximum Capacity" (System Information / Battery Health); nil until first read
     var cycleCount = 0
     var designCycleCount = 0     // rated cycle life (DesignCycleCount9C); 0 when the pack omits it
-    var temperatureC = 0.0
+    var temperatureC: Double? = nil   // °C — nil when neither the registry nor the SMC publishes one
     var voltageV = 0.0
     var amperageA = 0.0          // negative = discharging, positive = charging
     var isCharging = false

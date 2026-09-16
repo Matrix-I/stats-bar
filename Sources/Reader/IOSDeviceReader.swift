@@ -316,11 +316,12 @@ private final class IOSDeviceWorker: @unchecked Sendable {
                 if let named, !model.isEmpty, !version.isEmpty { infoCache[udid] = (named, model, version) }
             }
 
-            if let reg = readBatteryRegistry(diagnosticsPath, udid: udid, network: network) {
-                // Which key holds which figure is IOSBatteryRegistry's job, in Sources/Core: iOS
-                // moves them between releases, and the way that goes wrong is a card that still
-                // renders while four of its numbers quietly stop existing. See that type's header.
-                let batt = IOSBatteryRegistry.parse(reg)
+            if let read = readBatteryRegistry(diagnosticsPath, udid: udid, network: network) {
+                // Which key holds which figure — and in which of the two entries — is
+                // SmartBatteryRegistry's job, in Sources/Core: iOS moves them between releases, and the
+                // way that goes wrong is a card that still renders while four of its numbers quietly
+                // stop existing. See that type's header.
+                let batt = SmartBatteryRegistry.parse(read.entry, pack: read.pack)
                 dev.serial = batt.serial ?? ""
                 dev.designCapacity = batt.designCapacity
                 dev.maxCapacity = batt.maxCapacity
@@ -455,22 +456,41 @@ private final class IOSDeviceWorker: @unchecked Sendable {
                 plist["FullyCharged"] as? Bool ?? false)
     }
 
-    private func readBatteryRegistry(_ path: String, udid: String, network: Bool) -> [String: Any]? {
+    /// The battery entry and, when the entry is missing what it has, the gauge's own
+    /// AppleSmartBatteryPack entry beside it. Both reads come out of the one registry budget: the pack
+    /// is a second `idevicediagnostics` subprocess, so it is asked for only when `wantsPack` says the
+    /// entry is short — iOS 27 always, iOS 26 never — and only if the budget still has room. A pack read
+    /// that fails returns the entry alone, so the card shows what it showed a moment ago rather than
+    /// nothing.
+    private func readBatteryRegistry(_ path: String, udid: String, network: Bool)
+        -> (entry: [String: Any], pack: [String: Any]?)? {
         let budget = Budget(Self.registryBudget)
         for attempt in 0..<3 {
             for cls in ["AppleSmartBattery", "AppleARMPMUCharger"] {
                 guard budget.allowsAnotherCall else { return nil }
-                if let raw = DeviceTool.run(path, transportArgs(network) + ["-u", udid, "ioregentry", cls],
-                                            timeout: budget.callTimeout),
-                   let plist = try? PropertyListSerialization.propertyList(from: raw, options: [], format: nil) as? [String: Any],
-                   let reg = plist["IORegistry"] as? [String: Any],
-                   IOSBatteryRegistry.looksLikeABattery(reg) {
-                    return reg
+                if let reg = registryEntry(path, udid: udid, network: network, cls, timeout: budget.callTimeout),
+                   SmartBatteryRegistry.looksLikeABattery(reg) {
+                    var pack: [String: Any]?
+                    if SmartBatteryRegistry.wantsPack(reg), budget.allowsAnotherCall {
+                        pack = registryEntry(path, udid: udid, network: network, "AppleSmartBatteryPack",
+                                             timeout: budget.callTimeout)
+                    }
+                    return (reg, pack)
                 }
             }
             if attempt < 2 { Thread.sleep(forTimeInterval: 0.3) }
         }
         return nil
+    }
+
+    /// One `ioregentry` call, decoded to the entry's property dictionary, or nil on any failure.
+    private func registryEntry(_ path: String, udid: String, network: Bool, _ cls: String,
+                               timeout: TimeInterval) -> [String: Any]? {
+        guard let raw = DeviceTool.run(path, transportArgs(network) + ["-u", udid, "ioregentry", cls],
+                                       timeout: timeout),
+              let plist = try? PropertyListSerialization.propertyList(from: raw, options: [], format: nil) as? [String: Any]
+        else { return nil }
+        return plist["IORegistry"] as? [String: Any]
     }
 
     private func readDeviceInfoPlist(_ path: String, udid: String, network: Bool,

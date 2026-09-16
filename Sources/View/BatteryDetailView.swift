@@ -256,8 +256,12 @@ struct BatteryDetailView: View {
                     InfoRow(label: "Cycle count", value: "\(i.cycleCount)")
                 }
                 if showMacFullDetails {
-                    InfoRow(label: "Temperature",
-                            value: String(format: "%.1f °C", i.temperatureC))
+                    // Hidden rather than zeroed when absent: macOS 27 dropped the registry key and
+                    // some Macs publish no SMC pack sensor either, and an invented 0.0 °C reads as a
+                    // measurement.
+                    if let t = i.temperatureC {
+                        InfoRow(label: "Temperature", value: String(format: "%.1f °C", t))
+                    }
                     InfoRow(label: "Voltage",
                             value: String(format: "%.2f V", i.voltageV))
                     InfoRow(label: "Power", value: powerText(i))
