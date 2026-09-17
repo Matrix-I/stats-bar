@@ -204,6 +204,12 @@ func symbolPercentMenuBarImage(symbol: String, percent: Int) -> NSImage {
     return img
 }
 
+/// The GPU item's SF Symbol, shared by its menu-bar glyph and its Control Center overview row so the
+/// two cannot drift apart. SF Symbols ships no "gpu" mark — asked for by name at runtime, it does not
+/// resolve, unlike the "cpu" and "memorychip" the neighbouring items use — so the stacked-layers
+/// glyph stands in for it.
+let gpuMenuBarSymbol = "square.stack.3d.up.fill"
+
 /// Bluetooth menu-bar glyph: the Bluetooth rune drawn as a resolution-independent **template**
 /// NSImage (so the system tints it white-on-dark / black-on-light like the battery and CPU glyphs).
 /// SF Symbols ships no Bluetooth mark — the logo is a trademarked bind-rune — so we stroke it

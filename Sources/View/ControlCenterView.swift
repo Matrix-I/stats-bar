@@ -4,13 +4,14 @@
 // can never be hidden — the place you go to turn the others back on.
 //
 // Three sections:
-//   • Overview      — one tappable row per metric (Battery / CPU / RAM / Network / Bluetooth); a tap
+//   • Overview      — one tappable row per metric (Battery / CPU / GPU / RAM / Network / Bluetooth);
+//                     a tap
 //                     closes this popover and opens that metric's own detail popover (openDetail).
 //   • Menu bar items — a switch per metric, backed by "show<Item>Item" UserDefaults keys that
 //                     AppDelegate.refreshLabels() reads ~1 Hz to drive each NSStatusItem.isVisible.
 //   • General       — Launch at login, backed by SMAppService via LoginItem.
 //
-// It observes all five readers so the overview stays live, and forwards the popover's open/closed
+// It observes every metric reader so the overview stays live, and forwards the popover's open/closed
 // state to every reader's setPanelOpen so they poll at their faster cadence while it's showing
 // (Bluetooth in particular only polls while a panel is open).
 
@@ -19,11 +20,12 @@ import AppKit
 
 /// The metrics the overview can open. AppDelegate maps each to its popover + anchor button, and
 /// iterates `allCases` (declaration order = menu-bar order) to build and refresh the items.
-enum StatMetric: CaseIterable { case battery, cpu, memory, network, bluetooth }
+enum StatMetric: CaseIterable { case battery, cpu, gpu, memory, network, bluetooth }
 
 struct ControlCenterView: View {
     @ObservedObject var battery: BatteryReader
     @ObservedObject var cpu: CPUReader
+    @ObservedObject var gpu: GPUReader
     @ObservedObject var memory: MemoryReader
     @ObservedObject var network: NetworkReader
     @ObservedObject var bluetooth: BluetoothReader
@@ -42,8 +44,8 @@ struct ControlCenterView: View {
     /// The app's marketing version (CFBundleShortVersionString), shown top-right in the header — e.g.
     /// "v2.2.0", or "dev" for a -SNAPSHOT build (see displayVersion). Read from the bundle so it tracks
     /// build_app.sh's version bump with no code change. A `static let` (computed once for the process)
-    /// rather than a computed property: the version is constant at runtime, and the hub observes all
-    /// five readers so its body re-evaluates often — no need to redo the Bundle lookup on every eval.
+    /// rather than a computed property: the version is constant at runtime, and the hub observes every
+    /// reader so its body re-evaluates often — no need to redo the Bundle lookup on every eval.
     private static let appVersion: String = {
         let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
         return v.map(displayVersion) ?? ""
@@ -53,6 +55,7 @@ struct ControlCenterView: View {
     // reads, so a fresh install shows every item until the user turns one off here.
     @AppStorage("showBatteryItem")   private var showBattery = true
     @AppStorage("showCPUItem")       private var showCPU = true
+    @AppStorage("showGPUItem")       private var showGPU = true
     @AppStorage("showMemoryItem")    private var showMemory = true
     @AppStorage("showNetworkItem")   private var showNetwork = true
     @AppStorage("showBluetoothItem") private var showBluetooth = true
@@ -127,6 +130,10 @@ struct ControlCenterView: View {
                         label: "CPU", value: "\(pct(cpu.info.usagePercent))%",
                         valueColor: usageTint(cpu.info.usagePercent)) { openDetail(.cpu) }
 
+            OverviewRow(icon: .symbol(gpuSymbol, .secondary),
+                        label: "GPU", value: "\(pct(gpu.info.usagePercent))%",
+                        valueColor: usageTint(gpu.info.usagePercent)) { openDetail(.gpu) }
+
             OverviewRow(icon: .symbol("memorychip", .secondary),
                         label: "RAM", value: "\(pct(memory.info.usagePercent))%",
                         valueColor: usageTint(memory.info.usagePercent)) { openDetail(.memory) }
@@ -147,6 +154,7 @@ struct ControlCenterView: View {
         VStack(spacing: 4) {
             switchRow("Battery", isOn: $showBattery)
             switchRow("CPU", isOn: $showCPU)
+            switchRow("GPU", isOn: $showGPU)
             switchRow("RAM", isOn: $showMemory)
             switchRow("Network", isOn: $showNetwork)
             switchRow("Bluetooth", isOn: $showBluetooth)
@@ -185,6 +193,10 @@ struct ControlCenterView: View {
         }
     }
 
+    /// SF Symbols ships no "gpu" mark — verified by asking for one — so the stacked-layers glyph
+    /// stands in. Named once here and reused by the menu-bar item so the two never drift apart.
+    private var gpuSymbol: String { gpuMenuBarSymbol }
+
     private var networkValue: String {
         "↓\(fmtRate(network.info.downloadRate))  ↑\(fmtRate(network.info.uploadRate))"
     }
@@ -212,10 +224,10 @@ struct ControlCenterView: View {
 
     // MARK: Actions
 
-    /// The five overview readers seen through their shared control surface, so Refresh and the
+    /// The overview readers seen through their shared control surface, so Refresh and the
     /// panel-open forwarding below drive them in one loop instead of naming each by hand. (Reading
     /// each reader's typed `.info` still goes through the @ObservedObject properties above.)
-    private var readers: [any MetricReader] { [battery, cpu, memory, network, bluetooth] }
+    private var readers: [any MetricReader] { [battery, cpu, gpu, memory, network, bluetooth] }
 
     /// DisplayReader isn't a MetricReader (no cadence to manage, nothing to gate on panel visibility),
     /// but Refresh should still re-read it — a display woken from sleep can change mode without

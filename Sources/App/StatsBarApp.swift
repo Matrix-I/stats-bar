@@ -31,6 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let androidReader = AndroidDeviceReader()
     private let networkReader = NetworkReader()
     private let cpuReader = CPUReader()
+    private let gpuReader = GPUReader()
     private let memoryReader = MemoryReader()
     private let bluetoothReader = BluetoothReader()
     // Event-driven rather than polled, and shown only inside the Control Center hub — so it has no
@@ -59,7 +60,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         @objc func fire() { handler() }
     }
 
-    /// The five toggleable metrics, keyed by StatMetric. Built in applicationDidFinishLaunching, then
+    /// The toggleable metrics, keyed by StatMetric. Built in applicationDidFinishLaunching, then
     /// driven uniformly (toggle / presentDetail / refreshLabels) instead of one ivar + one @objc
     /// selector each. The Control Center is kept separate — it's never hidden and its glyph is static.
     private var metricItems: [StatMetric: MetricItem] = [:]
@@ -113,7 +114,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // toggle — it's the always-present hub for turning the others back on. Its glyph carries no
         // live number, so it's set once here rather than rebuilt each second in refreshLabels.
         configure(popover: controlCenterPopover,
-                  root: ControlCenterView(battery: batteryReader, cpu: cpuReader, memory: memoryReader,
+                  root: ControlCenterView(battery: batteryReader, cpu: cpuReader, gpu: gpuReader,
+                                          memory: memoryReader,
                                           network: networkReader, bluetooth: bluetoothReader,
                                           displays: displayReader,
                                           updater: updater,
@@ -130,7 +132,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controlCenterActionTarget = ccTarget
         controlCenterItem.button?.setAccessibilityLabel("Control Center")
 
-        // The five toggleable metrics, in menu-bar order (StatMetric's declaration order). Each pairs
+        // The toggleable metrics, in menu-bar order (StatMetric's declaration order). Each pairs
         // its reader-typed detail view with the glyph builder refreshLabels rebuilds each tick; the
         // Bluetooth glyph is static, so it's passed as a one-shot image with no live builder.
         addMetric(.battery, key: "showBatteryItem",
@@ -141,6 +143,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                   glyph: { [weak self] in self.map { s in
                       let pct = roundedInt(s.cpuReader.info.usagePercent)
                       return ("\(pct)", { symbolPercentMenuBarImage(symbol: "cpu", percent: pct) })
+                  } })
+        addMetric(.gpu, key: "showGPUItem",
+                  root: GPUDetailView(reader: gpuReader),
+                  glyph: { [weak self] in self.map { s in
+                      let pct = roundedInt(s.gpuReader.info.usagePercent)
+                      return ("\(pct)", { symbolPercentMenuBarImage(symbol: gpuMenuBarSymbol, percent: pct) })
                   } })
         addMetric(.memory, key: "showMemoryItem",
                   root: MemoryDetailView(reader: memoryReader),
@@ -271,6 +279,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch metric {
         case .battery:   return batteryReader
         case .cpu:       return cpuReader
+        case .gpu:       return gpuReader
         case .memory:    return memoryReader
         case .network:   return networkReader
         case .bluetooth: return bluetoothReader
@@ -333,6 +342,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return "Battery \(roundedInt(info.chargePercent))%" + (info.isPluggedIn ? ", charging" : "")
         case .cpu:
             return "CPU \(roundedInt(cpuReader.info.usagePercent))%"
+        case .gpu:
+            return "GPU \(roundedInt(gpuReader.info.usagePercent))%"
         case .memory:
             return "Memory \(roundedInt(memoryReader.info.usagePercent))%"
         case .network:

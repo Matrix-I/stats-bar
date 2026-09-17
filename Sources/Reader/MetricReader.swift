@@ -27,6 +27,7 @@ extension MetricReader {
 
 extension BatteryReader: MetricReader {}
 extension CPUReader: MetricReader {}
+extension GPUReader: MetricReader {}
 extension MemoryReader: MetricReader {}
 extension NetworkReader: MetricReader {}
 extension BluetoothReader: MetricReader {}

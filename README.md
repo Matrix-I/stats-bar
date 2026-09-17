@@ -62,13 +62,18 @@ One always-visible **StatsBar** item is the hub: an at-a-glance row per metric, 
 other items, and Launch at login. It can't be hidden, because it's where you turn the rest back on. (Launch
 at login also works the long way round: **System Settings → General → Login Items**.)
 
-Five further menu-bar items are optional, each with its own popover:
+Six further menu-bar items are optional, each with its own popover:
 
 - **Battery** — charge, macOS's own Maximum Capacity, cycle count against the pack's rated life,
   temperature, voltage, live charge/discharge power off the SMC power rails, and time remaining. Live fan
   speeds are pinned above it, each shown against its own floor and ceiling rather than as a bare RPM.
 - **CPU** — per-logical-core usage with that core's die temperature, frequency, thermal pressure, Low Power
   Mode, load average divided by core count, and the top processes (right-click one to quit it).
+- **GPU** — device, render and tiler utilisation as three rings over a usage-history chart, plus the
+  model, shader-core count, power draw and the memory the driver has mapped. The three utilisation
+  figures are kept separate because they answer different questions: a Metal compute kernel pegs the
+  device while leaving both pipeline stages at zero, so together they say whether the load is graphics
+  or compute. No ANE utilisation and no FPS — neither exists to read (see `Sources/View/GPUSection.swift`).
 - **Memory** — App / Wired / Compressed / Cached Files / Free, with the same per-process list.
 - **Network** — interface, addresses, DNS resolvers, Wi-Fi name and signal, public IP with country flag,
   live throughput and session totals.

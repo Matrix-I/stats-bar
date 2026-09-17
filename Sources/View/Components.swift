@@ -221,3 +221,55 @@ struct ProcessTableHeader: View {
         .padding(.leading, ProcessRow.iconSize + 8)   // align the header with the names, past the icons
     }
 }
+
+/// The USAGE HISTORY panel: a filled area chart of recent readings on a faint rounded plate, newest
+/// at the right edge. The geometry is not computed here — UsageHistory.plotPoints owns it, and the
+/// header of that file argues why (a chart drawn wrong looks like a design choice, so its arithmetic
+/// has to be somewhere a test can reach it).
+///
+/// A series shorter than two points draws the plate alone. That is not an edge case to tolerate but
+/// the normal first second after launch, and a single point has no line to stroke and no area to
+/// close; drawing the empty plate says "collecting" without the chart lurching as the second sample
+/// lands.
+struct HistoryChart: View {
+    let history: UsageHistory
+    let color: Color
+    /// Top of the y axis, in the samples' own units. Percentages are the only current caller, hence
+    /// the default, but the axis is a parameter so a future byte-rate series doesn't have to
+    /// pre-scale itself into one.
+    var maximum: Double = 100
+    var height: CGFloat = 52
+
+    var body: some View {
+        GeometryReader { geo in
+            let points = history.plotPoints(width: geo.size.width, height: geo.size.height,
+                                            maximum: maximum)
+            ZStack {
+                RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.07))
+                if points.count > 1 {
+                    area(points, in: geo.size).fill(color.opacity(0.35))
+                    line(points).stroke(color, style: StrokeStyle(lineWidth: 1.4, lineJoin: .round))
+                }
+            }
+        }
+        .frame(height: height)
+    }
+
+    private func line(_ points: [CGPoint]) -> Path {
+        var path = Path()
+        path.move(to: points[0])
+        for p in points.dropFirst() { path.addLine(to: p) }
+        return path
+    }
+
+    /// The same polyline closed down to the baseline, so the fill sits under the curve. Closing via
+    /// the two bottom corners of the *plotted span* rather than of the whole plate is what keeps a
+    /// half-full window from painting a block across the empty left half.
+    private func area(_ points: [CGPoint], in size: CGSize) -> Path {
+        var path = line(points)
+        path.addLine(to: CGPoint(x: points[points.count - 1].x, y: size.height))
+        path.addLine(to: CGPoint(x: points[0].x, y: size.height))
+        path.closeSubpath()
+        return path
+    }
+}
