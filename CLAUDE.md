@@ -70,8 +70,8 @@ directory, not a file list.
 
 ## Verifying a change
 
-`./run_tests.sh` covers roughly one line in six — about 1,936 of the 10,233 under `Sources/` — so a green
-suite says something about the arithmetic and nothing about the remaining 83%. Deliberately approximate:
+`./run_tests.sh` covers roughly one line in five — about 2,095 of the 10,951 under `Sources/` — so a green
+suite says something about the arithmetic and nothing about the remaining 81%. Deliberately approximate:
 the exact pair written here before ("541 of 8,139") was falsified two commits later by a new file in
 `Sources/Core`, and shipped that way. Recount rather than trust it:
 
