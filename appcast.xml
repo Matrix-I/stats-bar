@@ -7,6 +7,32 @@
     <language>en</language>
     <!-- APPCAST_ITEMS: update_appcast.sh prepends each release's <item> immediately below this line. -->
     <item>
+      <title>Version 2.14.0</title>
+      <pubDate>Mon, 26 Oct 2026 00:08:55 +0700</pubDate>
+      <sparkle:version>2.14.0</sparkle:version>
+      <sparkle:shortVersionString>2.14.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <sparkle:fullReleaseNotesLink>https://github.com/Matrix-I/stats-bar/releases/tag/v2.14.0</sparkle:fullReleaseNotesLink>
+      <description><![CDATA[# StatsBar v2.14.0 — fan control, and a GPU item in the menu bar
+
+Two additions and one fix. The fans can now be driven from the battery popover, and the GPU gets a menu-bar item of its own.
+
+- **New: Auto · Max · Manual fan control.** The 🌀 Fans section of the battery popover gains a mode control over every fan. **Auto** leaves the fans to macOS, exactly as before. **Max** drives each fan to its own ceiling — on the M1 Pro this was built on, the two fans top out at 5,779 and 6,241 rpm, so Max is per fan, not one number. **Manual** adds a slider under each fan, ranging over that fan's own minimum and maximum, and sends the speed when you let go. The existing rows keep showing the live speed, so you watch the fan converge on what you asked for.
+
+- **Fan control asks for your administrator password once.** The SMC accepts fan speeds only from root, so the first time you press **Enable fan control…** StatsBar installs a small helper, `local.statsbar.fanhelper`, as a LaunchDaemon. Only your user account can talk to it. It is removed from the "…" menu beside the Fans heading. If you never press the button, nothing is installed and nothing changes.
+
+- **Every way out ends with the fans back on Auto.** The helper hands the fans back to macOS when StatsBar quits or crashes, when it stops hearing from StatsBar for ten seconds, before the Mac sleeps, and when the helper itself is stopped or restarted. A manual speed is never remembered: every launch starts on Auto. Measured on an M1 Pro, a StatsBar killed mid-override had its fan back on Auto 0.12 s later.
+
+- **New: a GPU menu-bar item.** Utilisation with a history chart, and power in watts. It shows three utilisation figures rather than one — device, renderer and tiler — because they move independently: a compute workload pins the device figure while renderer and tiler stay at zero, so together they tell graphics load from compute. A GPU that does not publish a figure simply has no row for it, rather than a zero standing in for it.
+
+- **Fixed: opening StatsBar while it was already running showed an empty "StatsBar Settings" window.** Launching it a second time from Finder or with `open` now does nothing, since everything it shows is already in the menu bar.
+
+The tested layer is at 269 tests across 21 suites, up from 224. The fan helper's protocol, its speed clamp and the quoting of its install command are all in that layer, and the clamp and the quoting were each checked by breaking them and watching the suite go red.
+
+_Not notarized — right-click → Open on first launch (on macOS 15+ the confirmation moved to System Settings ▸ Privacy & Security ▸ "Open Anyway"), or `xattr -dr com.apple.quarantine /Applications/StatsBar.app`._]]></description>
+      <enclosure url="https://github.com/Matrix-I/stats-bar/releases/download/v2.14.0/StatsBar-v2.14.0.dmg" sparkle:edSignature="9eStS7GpABrNq5lZerMr1oWbFZBvVwSqK4z1BPCq1N2CmtGDb30HJaJRQGZJcCVRyR6RSm7TOHNksU3Q17o+AQ==" length="2726077" type="application/octet-stream" />
+    </item>
+    <item>
       <title>Version 2.13.2</title>
       <pubDate>Wed, 16 Sep 2026 09:16:34 +0700</pubDate>
       <sparkle:version>2.13.2</sparkle:version>
