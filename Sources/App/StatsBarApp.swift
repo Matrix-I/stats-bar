@@ -109,6 +109,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Fires on clicks outside the app so an open popover dismisses like a normal menu-bar popover.
     private var outsideClickMonitor: Any?
 
+    /// `open StatsBar.app` (or a Finder double-click) on a copy that is already running is a "reopen",
+    /// and SwiftUI's default answer to a reopen with no visible windows is to show a scene — and the
+    /// only scene this App declares is the placeholder `Settings { EmptyView() }` below, so it put up a
+    /// blank "StatsBar Settings" window. The UI is the status items, which are already on screen, so
+    /// there is nothing to reopen; returning false declines the default handling entirely.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        false
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         fanController.restoreAutoBeforeExit()
     }
