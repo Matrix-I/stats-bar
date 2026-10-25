@@ -42,6 +42,7 @@ struct BatteryDetailView: View {
     @ObservedObject var reader: BatteryReader
     @ObservedObject var iosReader: IOSDeviceReader
     @ObservedObject var androidReader: AndroidDeviceReader
+    @ObservedObject var fanController: FanController
     @AppStorage("showMenuBarPercent") private var showMenuBarPercent = true
     @AppStorage("showIPhoneMenuBar") private var showIPhoneMenuBar = false
     @AppStorage("showAndroidMenuBar") private var showAndroidMenuBar = false
@@ -144,6 +145,9 @@ struct BatteryDetailView: View {
                 // IOSDeviceReader.setPanelOpen.
                 iosReader.setPanelOpen(open)
                 androidReader.setPanelOpen(open)
+                // Whether the fan helper is installed, current and answering can change while the
+                // popover is closed (an update, an uninstall in Terminal), so it is re-checked on open.
+                if open { fanController.refresh() }
             },
             onScreenHeight: { h in if h > 0 { panelScreenHeight = h } }
         ))
@@ -166,10 +170,14 @@ struct BatteryDetailView: View {
         Group {
             if !fans.isEmpty {
                 VStack(alignment: .leading, spacing: 12) {
-                    SectionCaption("🌀 Fans (live)")
+                    SectionCaption("🌀 Fans (live)") { FanHelperMenu(controller: fanController) }
+                    FanModeControl(controller: fanController, fans: fans)
                     VStack(spacing: 8) {
                         ForEach(fans) { fan in
-                            FanRow(fan: fan, showIndex: fans.count > 1)
+                            FanRow(fan: fan, showIndex: fans.count > 1,
+                                   manualTarget: fanController.mode == .manual
+                                       ? fanController.manualTargets[fan.index] ?? fan.actual : nil,
+                                   onCommit: { fanController.setTarget(fan: fan.index, rpm: $0) })
                         }
                     }
                     // Marks the pinned/scrolling boundary, mirroring the one the footer opens with.
@@ -624,6 +632,9 @@ private struct ShowMoreButton: View {
 private struct FanRow: View {
     let fan: FanInfo
     let showIndex: Bool
+    /// The speed this fan was asked for, in Manual only; nil hides the slider.
+    var manualTarget: Double? = nil
+    var onCommit: (Double) -> Void = { _ in }
 
     private var label: String { showIndex ? "Fan \(fan.index + 1)" : "Fan" }
     private func rpm(_ v: Double) -> String { "\(roundedInt(v)) rpm" }
@@ -644,6 +655,10 @@ private struct FanRow: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .monospacedDigit()
+
+                if let target = manualTarget, hi > lo {
+                    FanSpeedSlider(range: lo...hi, committed: target, onCommit: onCommit)
+                }
             }
         }
     }
@@ -652,5 +667,98 @@ private struct FanRow: View {
     /// read-at-a-glance ramp the temperature and capacity bars use.
     private func barColor(_ frac: Double) -> Color {
         frac < 0.4 ? .green : (frac < 0.75 ? .orange : .red)
+    }
+}
+
+/// Auto · Max · Manual, or — until the helper is in place — the button that installs it. Lives under
+/// the Fans caption, above the rows it acts on.
+private struct FanModeControl: View {
+    @ObservedObject var controller: FanController
+    let fans: [FanInfo]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            switch controller.helper {
+            case .ready:
+                Picker("Fan mode", selection: Binding(
+                    get: { controller.mode },
+                    set: { controller.setMode($0, fans: fans) }
+                )) {
+                    Text("Auto").tag(FanController.Mode.auto)
+                    Text("Max").tag(FanController.Mode.max)
+                    Text("Manual").tag(FanController.Mode.manual)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            case .notInstalled:
+                installButton("Enable fan control…")
+            case .needsUpdate:
+                installButton("Update fan helper…")
+            case let .unavailable(reason):
+                Text(reason).font(.caption2).foregroundStyle(.secondary)
+                if FanHelperInstaller.bundledHelper != nil { installButton("Reinstall fan helper…") }
+            case .unknown:
+                EmptyView()
+            }
+            if let message = controller.message {
+                Text(message).font(.caption2).foregroundStyle(.orange)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func installButton(_ title: String) -> some View {
+        Button(title) { controller.installHelper() }
+            .controlSize(.small)
+            .disabled(controller.isInstalling)
+            .help("Installs a small helper that runs as root, which the SMC requires before it accepts fan speeds. Asks for an administrator password.")
+    }
+}
+
+/// The caption's trailing "…" menu: the only way to remove the helper from inside the app. Hidden
+/// while nothing is installed, since there is nothing to remove.
+private struct FanHelperMenu: View {
+    @ObservedObject var controller: FanController
+
+    var body: some View {
+        if controller.helper != .notInstalled, controller.helper != .unknown {
+            Menu {
+                Button("Remove fan helper…") { controller.uninstallHelper() }
+                    .disabled(controller.isInstalling)
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+        }
+    }
+}
+
+/// A slider over one fan's own range. The drag is held locally and committed on release, so moving the
+/// slider is one command to the helper rather than one per frame — and the value shown while dragging
+/// is the one under the user's finger, not whatever the last reply said.
+private struct FanSpeedSlider: View {
+    let range: ClosedRange<Double>
+    let committed: Double
+    let onCommit: (Double) -> Void
+    @State private var dragging: Double?
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Slider(value: Binding(get: { dragging ?? committed }, set: { dragging = $0 }),
+                   in: range,
+                   onEditingChanged: { editing in
+                       guard !editing, let value = dragging else { return }
+                       onCommit(value)
+                       dragging = nil
+                   })
+                .controlSize(.small)
+            Text("\(roundedInt(dragging ?? committed)) rpm")
+                .font(.caption2)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .frame(width: 64, alignment: .trailing)
+        }
     }
 }

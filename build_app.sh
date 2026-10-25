@@ -95,6 +95,17 @@ if [ -f "AppIcon.icns" ]; then
     cp "AppIcon.icns" "$APP.app/Contents/Resources/AppIcon.icns"
 fi
 
+# The fan helper: a separate root LaunchDaemon, so a separate binary. Helper/ sits outside Sources/
+# precisely so the `find Sources` above never pulls it into the app module. It shares exactly one file
+# with the app — Sources/Core/FanControl.swift, the wire protocol and the RPM clamp — so the two cannot
+# disagree about what a command means. No -parse-as-library: Helper/main.swift is top-level code.
+# FanHelperInstaller copies it from Resources into /Library/PrivilegedHelperTools on the user's say-so.
+HELPER="$APP.app/Contents/Resources/local.statsbar.fanhelper"
+echo "🔨 Compiling the fan helper (Helper/*.swift) ..."
+# shellcheck disable=SC2086
+swiftc -O -target "$TARGET" ${SDKROOT_FLAGS[@]+"${SDKROOT_FLAGS[@]}"} Helper/*.swift Sources/Core/FanControl.swift \
+    -o "$HELPER"
+
 cat > "$APP.app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -176,8 +187,11 @@ else
 fi
 
 # Sign inside-out: the embedded Sparkle framework first (it nests Updater.app + XPC services, which
-# codesign --deep signs with our identity so Sparkle's runtime sees a matching signature), then seal
-# the app bundle around it. Ad-hoc ('-') signing is tolerated on failure; a real identity must succeed.
+# codesign --deep signs with our identity so Sparkle's runtime sees a matching signature), then the fan
+# helper, then seal the app bundle around both. Ad-hoc ('-') signing is tolerated on failure; a real
+# identity must succeed. The helper is signed with an explicit identifier because codesign would
+# otherwise derive one from the file name, and FanHelperInstaller compares installed and bundled
+# helpers by cdhash, which signing a second time with the same code leaves unchanged.
 SPARKLE_FW="$APP.app/Contents/Frameworks/Sparkle.framework"
 if [ "$SIGN_TO" = "-" ]; then
     # `|| ...` alone is what tolerates the failure; the 2>/dev/null this used to carry additionally
@@ -186,9 +200,11 @@ if [ "$SIGN_TO" = "-" ]; then
     # `codesign --verify` error with its diagnostic already discarded, and would not reproduce locally,
     # where the other branch is fatal and loud.
     codesign --force --deep -s - "$SPARKLE_FW" || echo "⚠️  ad-hoc codesign of Sparkle.framework failed"
+    codesign --force -s - -i local.statsbar.fanhelper "$HELPER" || echo "⚠️  ad-hoc codesign of the fan helper failed"
     codesign --force -s - "$APP.app" || echo "⚠️  ad-hoc codesign of $APP.app failed"
 else
     codesign --force --deep -s "$SIGN_TO" "$SPARKLE_FW"
+    codesign --force -s "$SIGN_TO" -i local.statsbar.fanhelper "$HELPER"
     codesign --force -s "$SIGN_TO" "$APP.app"
 fi
 

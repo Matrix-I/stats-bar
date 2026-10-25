@@ -1,6 +1,6 @@
 # Fan control — design
 
-Status: approved 2026-10-25. Not yet implemented.
+Status: approved 2026-10-25. Implemented; hardware verification pending (see the last section).
 
 ## Goal
 
@@ -64,13 +64,18 @@ places the binary in `StatsBar.app/Contents/Resources/`, and signs it with the s
 - **Write sequence** (Apple Silicon): `Ftst = 1` if the key exists, then `F<n>Md = 1`, then
   `F<n>Tg = rpm` as `flt `. Back to Auto: `F<n>Md = 0` for every fan, then `Ftst = 0`. Each key's
   layout is read with READ_KEYINFO before writing, and a write whose type/size does not match what the
-  helper expects is refused rather than attempted. This sequence is to be confirmed on real hardware
-  (see Verification) before it is relied on.
+  helper expects, or to a key without the SMC's writable attribute (0x40), is refused rather than
+  attempted. Measured read-only on the M1 Pro: `F<n>Md` is `ui8 `/1 with attributes 0xd0, `F<n>Tg` is
+  `flt `/4 with 0xd4, `F<n>Mn`/`F<n>Mx` are 0x84/0x85 (not writable), and `Ftst` does not exist.
 - **Socket.** `/var/run/statsbar-fan.sock`, `chown`ed to the installing user's uid (passed to the helper
   as a launch argument in the plist) and `chmod 0600`. Every accepted connection is also checked with
   `getpeereid` against that uid, so another account on the Mac cannot drive the fans. One client at a
   time; a second connection is refused.
-- **Protocol.** Line-based, one `FanCommand` per line, one `FanReply` per line back.
+- **Protocol.** Line-based, one `FanCommand` per line, one `FanReply` per line back. `ping` answers
+  `ok` while a fan is overridden and an error otherwise; the app only pings while it believes a fan is
+  overridden, so that error is how it learns the helper restored Auto on its own.
+- **Startup.** The helper restores Auto as soon as it starts, in case a previous instance died with
+  fans in manual mode and launchd's `KeepAlive` is restarting it.
 
 ### 3. `Sources/Reader/FanController.swift` — app side
 
@@ -84,8 +89,14 @@ mode is not Auto it sends `ping` every 2 s. It also exposes the helper state (`n
 Install, update and uninstall via one `osascript -e 'do shell script "…" with administrator
 privileges'` each: copy the binary to `/Library/PrivilegedHelperTools/local.statsbar.fanhelper`, write
 `/Library/LaunchDaemons/local.statsbar.fanhelper.plist` (`RunAtLoad`, `KeepAlive`, the uid argument),
-and `launchctl bootout` + `launchctl bootstrap system` it. The installed version is learned by asking
-the running helper (`version`), not by reading files.
+and `launchctl bootout` + `launchctl bootstrap system` it. The script and the plist are assembled in
+`Sources/Core/FanHelperInstallScript.swift`, where the two layers of quoting between a bundle path and
+the root shell are tested.
+
+"Update fan helper…" is offered when the installed helper's **code directory hash** differs from the
+bundled one, or when it reports a different protocol version. Not a byte comparison: the signature
+embeds its signing time, so identical code signed twice differs byte-for-byte (measured: two builds,
+different SHA-1, same cdhash).
 
 ### 5. View — `BatteryDetailView.swift`
 
@@ -106,6 +117,8 @@ The app additionally sends `auto` on `applicationWillTerminate`, but nothing dep
 
 ## Testing and verification
 
+- `Tests/StatsBarCoreTests/FanHelperInstallScriptTests.swift`: hostile bundle paths (quotes, `$(…)`,
+  backticks, `; rm -rf ~;`) survive both quoting layers as inert text; mutant on the quote escape.
 - `Tests/StatsBarCoreTests/FanControlTests.swift`: round-trip every command and reply; reject malformed
   lines; clamp below/inside/above range; nil for `max <= min`, NaN and negative limits. The clamp's
   limit guard gets a mutant (guard removed → suite must go red), per the repo convention.

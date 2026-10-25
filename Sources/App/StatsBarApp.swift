@@ -37,6 +37,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Event-driven rather than polled, and shown only inside the Control Center hub — so it has no
     // menu-bar item and isn't a StatMetric.
     private let displayReader = DisplayReader()
+    // Not a reader: it drives the fans through the root helper, and is shown inside the battery
+    // popover's Fans section rather than as a menu-bar item of its own.
+    private let fanController = FanController()
     private let updater = Updater()
 
     /// One toggleable metric's menu-bar item: its status item, its detail popover, the UserDefaults
@@ -106,6 +109,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Fires on clicks outside the app so an open popover dismisses like a normal menu-bar popover.
     private var outsideClickMonitor: Any?
 
+    func applicationWillTerminate(_ notification: Notification) {
+        fanController.restoreAutoBeforeExit()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Menu-bar-only app: no Dock icon, no app menu (the .app bundle also sets LSUIElement).
         NSApp.setActivationPolicy(.accessory)
@@ -136,7 +143,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // its reader-typed detail view with the glyph builder refreshLabels rebuilds each tick; the
         // Bluetooth glyph is static, so it's passed as a one-shot image with no live builder.
         addMetric(.battery, key: "showBatteryItem",
-                  root: BatteryDetailView(reader: batteryReader, iosReader: iosReader, androidReader: androidReader),
+                  root: BatteryDetailView(reader: batteryReader, iosReader: iosReader, androidReader: androidReader,
+                                          fanController: fanController),
                   glyph: { [weak self] in self?.batteryGlyph() })
         addMetric(.cpu, key: "showCPUItem",
                   root: CPUDetailView(reader: cpuReader),
