@@ -7,6 +7,24 @@
     <language>en</language>
     <!-- APPCAST_ITEMS: update_appcast.sh prepends each release's <item> immediately below this line. -->
     <item>
+      <title>Version 2.14.1</title>
+      <pubDate>Sun, 08 Nov 2026 09:22:20 +0700</pubDate>
+      <sparkle:version>2.14.1</sparkle:version>
+      <sparkle:shortVersionString>2.14.1</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <sparkle:fullReleaseNotesLink>https://github.com/Matrix-I/stats-bar/releases/tag/v2.14.1</sparkle:fullReleaseNotesLink>
+      <description><![CDATA[# StatsBar v2.14.1 — no more empty Settings window at launch
+
+A fix release, with a new app icon riding along.
+
+- **Fixed: launching StatsBar showed an empty "StatsBar Settings" window.** v2.14.0 stopped the window from appearing when StatsBar was opened a second time while already running, but a fresh launch from Finder, with `open`, or at login through Login Items still put it up every time. StatsBar now opens straight into the menu bar, with no window, however it is started.
+
+- **New app icon.** The battery icon dates from when StatsBar only read the battery. It now shows a chip with a pulse line, since the app also covers CPU, GPU, memory, network, fans and attached devices. It is drawn to the standard macOS icon grid, so it no longer looks oversized next to other icons in the Dock and Finder.
+
+_Not notarized — right-click → Open on first launch (on macOS 15+ the confirmation moved to System Settings ▸ Privacy & Security ▸ "Open Anyway"), or `xattr -dr com.apple.quarantine /Applications/StatsBar.app`._]]></description>
+      <enclosure url="https://github.com/Matrix-I/stats-bar/releases/download/v2.14.1/StatsBar-v2.14.1.dmg" sparkle:edSignature="Vg/M3/o+32YiaF2nja1lBQScJy72ajwOtiVkUy3ElYJmGigOvIFmPIBGETCBz2U9tZk7sSQT06uQGoJkom99Ag==" length="2741937" type="application/octet-stream" />
+    </item>
+    <item>
       <title>Version 2.14.0</title>
       <pubDate>Mon, 26 Oct 2026 00:08:55 +0700</pubDate>
       <sparkle:version>2.14.0</sparkle:version>
