@@ -118,6 +118,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         false
     }
 
+    /// The same blank window, but on a cold launch rather than a reopen. Launching through
+    /// LaunchServices (`open`, Finder, Login Items) delivers an "open application" event, and AppKit
+    /// answers that by asking the delegate whether to open an untitled document. Left unimplemented
+    /// here, SwiftUI's own delegate answers instead and shows the first scene — the placeholder
+    /// Settings — so every login put the window up. Exec'ing the binary directly sends no such event,
+    /// which is why launching from a shell never showed it. Answering at all takes the decision away
+    /// from SwiftUI; false says there is no document to open.
+    func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool {
+        false
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         fanController.restoreAutoBeforeExit()
     }
